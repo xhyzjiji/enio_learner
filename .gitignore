@@ -1,0 +1,6 @@
+# 密钥与本地配置 / Secrets and local config
+.env
+deploy/mcp-mysql/.env
+
+# 构建产物 / Build output
+/bin/

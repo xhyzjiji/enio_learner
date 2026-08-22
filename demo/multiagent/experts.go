@@ -1,13 +1,37 @@
-// Package multiagent 对应 LangGraph 的 multi_agent_demo.py：router + 天气专家 + 景点专家。
-// Package multiagent mirrors multi_agent_demo.py: a router plus a weather expert and an attraction expert.
+// Package multiagent 对应 LangGraph 的 multi_agent_demo.py：天气专家 + 景点专家协作。
+// Package multiagent mirrors multi_agent_demo.py: a weather expert and an attraction expert collaborating.
 //
-// 同一个需求这里给了两种 ADK 实现，可以直接对比：
-//   - supervisor.go：Supervisor 模式，调度器把任务转交给专家，专家做完转回调度器
-//   - agenttool.go： AgentAsTool 模式，专家被包成 Tool，由主 Agent 自主决定何时调用
+// 同一个需求给了三种 ADK 实现，专家定义（本文件）三者完全复用，差异纯粹来自编排方式：
+//   - supervisor.go：调度器把控制权转交给专家，专家做完转回调度器
+//   - agenttool.go： 专家被包成 Tool，由主 Agent 自主决定何时调用
+//   - sequential.go：没有调度者，顺序由 SubAgents 的下标写死
 //
-// Two ADK implementations of the same requirement are provided side by side:
-//   - supervisor.go: the supervisor transfers work to experts, experts transfer back
+// Three ADK implementations of one requirement; the experts (this file) are shared verbatim,
+// so every difference comes from orchestration alone:
+//   - supervisor.go: the supervisor hands control to an expert, the expert hands it back
 //   - agenttool.go:  experts are wrapped as tools, the main agent decides when to call them
+//   - sequential.go: no coordinator at all, the order is fixed by the SubAgents slice index
+//
+// 三者的关键差异 / How they differ:
+//
+//	                    顺序由谁决定        专家能否看到彼此的输出        额外的模型开销
+//	supervisor          模型               能（共享上下文）             每次转交都要模型决策一次
+//	agenttool           模型               不能（仅入参与返回值）        协调者要复述数据
+//	sequential          代码               能（共享上下文）             无
+//
+// 景点专家依赖天气专家的结果，这个依赖在三版里的落地方式完全不同：
+// supervisor 和 sequential 靠共享上下文自然可见；agenttool 必须由协调者在任务描述里转述，
+// 这也是 coordinatorInstruction 比另外两版的提示词啰嗦得多的原因。
+// The attraction expert depends on the weather expert's result, and each version resolves that
+// differently: supervisor and sequential get it for free via shared context, while agenttool needs the
+// coordinator to restate it — which is why coordinatorInstruction is so much wordier than the others.
+//
+// 注意 adk 给 supervisor 和 workflow agent（含 Sequential）都标了 NOT RECOMMENDED，
+// 理由是二者都建立在 agent transfer + 全量上下文共享之上，实测效果未必更好。
+// 需要真正确定性的编排时，compose 层的 Graph / Chain 才是更干净的选择，见 demo/fruitdag。
+// Note that adk marks both supervisor and the workflow agents (Sequential included) as NOT RECOMMENDED,
+// because both build on agent transfer with full context sharing and haven't proven better empirically.
+// For genuinely deterministic orchestration, the compose-layer Graph / Chain is cleaner — see demo/fruitdag.
 package multiagent
 
 import (

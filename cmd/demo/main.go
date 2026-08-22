@@ -12,6 +12,7 @@ import (
 	// 空导入触发各 demo 的 init 注册。/ Blank imports trigger each demo's init registration.
 	_ "private/agent_basedon_eino/demo/chatbot"
 	_ "private/agent_basedon_eino/demo/fruitdag"
+	_ "private/agent_basedon_eino/demo/mcpagent"
 	_ "private/agent_basedon_eino/demo/multiagent"
 	_ "private/agent_basedon_eino/demo/travelagent"
 
