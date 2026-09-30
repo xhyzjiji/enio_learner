@@ -25,9 +25,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "chatbot",
-		Desc: "无工具的单轮问答 / single-turn Q&A without tools (chatbot_demo.py)",
-		Run:  Run,
+		Name:     "chatbot",
+		Desc:     "无工具的单轮问答 / single-turn Q&A without tools (chatbot_demo.py)",
+		Category: democli.CatAgent,
+		Order:    20,
+		Needs:    "ZHIPUAI_API_KEY",
+		Run:      Run,
 	})
 }
 

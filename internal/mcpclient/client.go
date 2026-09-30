@@ -10,7 +10,6 @@ package mcpclient
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	mcpp "github.com/cloudwego/eino-ext/components/tool/mcp"
@@ -21,20 +20,24 @@ import (
 )
 
 const (
-	defaultEndpoint = "http://127.0.0.1:3000/mcp"
-	clientName      = "eino-demo-client"
-	clientVersion   = "1.0.0"
-	dialTimeout     = 30 * time.Second
+	clientName    = "eino-demo-client"
+	clientVersion = "1.0.0"
+	dialTimeout   = 30 * time.Second
 )
 
 // Config 描述一次 MCP 连接。/ Config describes one MCP connection.
+//
+// Endpoint 和 Secret 都要求调用方显式传入，本包不读任何环境变量。
+// 工程里有多个 MCP server，一旦在这里兜底某个服务的环境变量，
+// 另一个服务忘了传密钥时就会静默连到错误的配置上，排查起来很费劲。
+// Both Endpoint and Secret must be supplied by the caller; this package reads no environment variables.
+// The repo hosts several MCP servers, and defaulting to one service's env vars here would let another
+// service silently pick up the wrong credentials — a nasty thing to debug.
 type Config struct {
-	// Endpoint 是 Streamable HTTP 端点，留空则读 MCP_MYSQL_ENDPOINT 或用默认值。
-	// Endpoint is the Streamable HTTP endpoint; empty falls back to MCP_MYSQL_ENDPOINT or the default.
+	// Endpoint 是 Streamable HTTP 端点。/ Endpoint is the Streamable HTTP endpoint.
 	Endpoint string
 
-	// Secret 是 Bearer token，留空则读 MCP_MYSQL_SECRET。
-	// Secret is the bearer token; empty falls back to MCP_MYSQL_SECRET.
+	// Secret 是 Bearer token。/ Secret is the bearer token.
 	Secret string
 
 	// ToolNames 限定拉取哪些工具，留空表示全部。
@@ -60,15 +63,16 @@ type Client struct {
 // The remote mode of mcp-server-mysql is stateless (sessionIdGenerator: undefined),
 // so there is no session id to deal with here.
 func Dial(ctx context.Context, cfg Config) (*Client, error) {
-	endpoint := firstNonEmpty(cfg.Endpoint, os.Getenv("MCP_MYSQL_ENDPOINT"), defaultEndpoint)
-
-	secret := firstNonEmpty(cfg.Secret, os.Getenv("MCP_MYSQL_SECRET"))
-	if secret == "" {
-		return nil, fmt.Errorf("mcp secret is empty: set MCP_MYSQL_SECRET to the REMOTE_SECRET_KEY of the server")
+	if cfg.Endpoint == "" {
+		return nil, fmt.Errorf("mcp endpoint is empty")
 	}
+	if cfg.Secret == "" {
+		return nil, fmt.Errorf("mcp secret is empty")
+	}
+	endpoint := cfg.Endpoint
 
 	cli, err := client.NewStreamableHttpClient(endpoint,
-		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + secret}),
+		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + cfg.Secret}),
 		transport.WithHTTPTimeout(dialTimeout),
 	)
 	if err != nil {
@@ -140,13 +144,4 @@ func truncateResult(limit int) func(context.Context, string, *mcp.CallToolResult
 		}
 		return result, nil
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

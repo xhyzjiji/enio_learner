@@ -13,6 +13,7 @@ package mcpagent
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -28,10 +29,24 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "mcp",
-		Desc: "MCP 数据库 + 天气 + 景点三级串联 / chains an MCP database tool with weather and attractions",
-		Run:  Run,
+		Name:     "mcp",
+		Desc:     "MCP 数据库 + 天气 + 景点三级串联 / chains an MCP database tool with weather and attractions",
+		Category: democli.CatMCP,
+		Order:    40,
+		Needs:    "ZHIPUAI_API_KEY, TAVILY_API_KEY, MCP_MYSQL_SECRET, 且需先启动 deploy/mcp-mysql/run-server.sh",
+		Run:      Run,
 	})
+}
+
+// defaultEndpoint 是 deploy/mcp-mysql/run-server.sh 的默认监听地址。
+// defaultEndpoint is where deploy/mcp-mysql/run-server.sh listens by default.
+const defaultEndpoint = "http://127.0.0.1:3000/mcp"
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // query 的三步答案彼此依赖：城市来自数据库，天气依赖城市，景点依赖城市和天气。
@@ -66,6 +81,8 @@ const mcpInstruction = `你是团队出行助手，**所有事实都必须来自
 // Run 跑一次完整的三级工具链。/ Run performs one full three-step tool chain.
 func Run(ctx context.Context) error {
 	cfg := mcpclient.Config{
+		Endpoint: envOr("MCP_MYSQL_ENDPOINT", defaultEndpoint),
+		Secret:   os.Getenv("MCP_MYSQL_SECRET"),
 		// 数据库返回的行数不可控，截断一下免得撑爆上下文。
 		// Row counts from the database are unbounded; truncate so the context window survives.
 		MaxResultBytes: 4096,

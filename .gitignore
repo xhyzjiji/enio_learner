@@ -4,3 +4,10 @@ deploy/mcp-mysql/.env
 
 # 构建产物 / Build output
 /bin/
+.ttadk/
+specs/doc_export/
+
+.cursor/
+README.md
+ai-plugin-lock.json
+ai-plugin.json

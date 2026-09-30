@@ -14,9 +14,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "supervisor",
-		Desc: "Supervisor 版多智能体 / multi-agent via supervisor (multi_agent_demo.py)",
-		Run:  RunSupervisor,
+		Name:     "supervisor",
+		Desc:     "Supervisor 版多智能体 / multi-agent via supervisor (multi_agent_demo.py)",
+		Category: democli.CatMultiAgent,
+		Order:    50,
+		Needs:    "ZHIPUAI_API_KEY, TAVILY_API_KEY",
+		Run:      RunSupervisor,
 	})
 }
 

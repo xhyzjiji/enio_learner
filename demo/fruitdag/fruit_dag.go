@@ -19,9 +19,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "dag",
-		Desc: "水果结账流水线 / fruit checkout pipeline (dag_demo.py)",
-		Run:  Run,
+		Name:     "dag",
+		Desc:     "水果结账流水线 / fruit checkout pipeline (dag_demo.py)",
+		Category: democli.CatCompose,
+		Order:    10,
+		Needs:    "无 / nothing",
+		Run:      Run,
 	})
 }
 

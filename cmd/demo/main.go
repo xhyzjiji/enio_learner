@@ -14,6 +14,7 @@ import (
 	_ "private/agent_basedon_eino/demo/fruitdag"
 	_ "private/agent_basedon_eino/demo/mcpagent"
 	_ "private/agent_basedon_eino/demo/multiagent"
+	_ "private/agent_basedon_eino/demo/skillagent"
 	_ "private/agent_basedon_eino/demo/travelagent"
 
 	"private/agent_basedon_eino/internal/democli"
@@ -36,23 +37,28 @@ func main() {
 	democli.Main(demo.Name, demo.Run)
 }
 
+// usage 按能力分类列出 demo，组的先后就是建议的学习顺序。
+// usage lists demos grouped by capability; group order is the suggested learning path.
 func usage() {
-	demos := democli.All()
-
 	width := 0
-	for _, d := range demos {
+	for _, d := range democli.All() {
 		if len(d.Name) > width {
 			width = len(d.Name)
 		}
 	}
 
 	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/demo <name>")
-	fmt.Fprintln(os.Stderr, "available demos:")
-	for _, d := range demos {
-		fmt.Fprintf(os.Stderr, "  %-*s  %s\n", width, d.Name, d.Desc)
+	fmt.Fprintln(os.Stderr, "\n按能力分类，由浅入深 / grouped by capability, shallow to deep:")
+
+	for _, g := range democli.Grouped() {
+		fmt.Fprintf(os.Stderr, "\n  %s\n", g.Category)
+		for _, d := range g.Demos {
+			fmt.Fprintf(os.Stderr, "    %-*s  %s\n", width, d.Name, d.Desc)
+			fmt.Fprintf(os.Stderr, "    %-*s  前置 / needs: %s\n", width, "", d.Needs)
+		}
 	}
+
 	fmt.Fprintln(os.Stderr, "\n每个 demo 也可以独立运行 / each demo can also run standalone:")
-	for _, d := range demos {
-		fmt.Fprintf(os.Stderr, "  go run ./cmd/%s\n", d.Name)
-	}
+	fmt.Fprintln(os.Stderr, "  go run ./cmd/<name>")
+	fmt.Fprintln(os.Stderr, "\n完整说明见 README.md / see README.md for the full guide")
 }

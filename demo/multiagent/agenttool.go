@@ -15,9 +15,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "agenttool",
-		Desc: "AgentAsTool 版多智能体 / multi-agent via AgentAsTool (multi_agent_demo.py)",
-		Run:  RunAgentTool,
+		Name:     "agenttool",
+		Desc:     "AgentAsTool 版多智能体 / multi-agent via AgentAsTool (multi_agent_demo.py)",
+		Category: democli.CatMultiAgent,
+		Order:    60,
+		Needs:    "ZHIPUAI_API_KEY, TAVILY_API_KEY",
+		Run:      RunAgentTool,
 	})
 }
 

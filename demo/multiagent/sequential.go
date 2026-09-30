@@ -13,9 +13,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "sequential",
-		Desc: "SequentialAgent 版多智能体 / multi-agent via SequentialAgent (multi_agent_demo.py)",
-		Run:  RunSequential,
+		Name:     "sequential",
+		Desc:     "SequentialAgent 版多智能体 / multi-agent via SequentialAgent (multi_agent_demo.py)",
+		Category: democli.CatMultiAgent,
+		Order:    70,
+		Needs:    "ZHIPUAI_API_KEY, TAVILY_API_KEY",
+		Run:      RunSequential,
 	})
 }
 

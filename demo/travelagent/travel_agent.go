@@ -23,9 +23,12 @@ import (
 
 func init() {
 	democli.Register(democli.Demo{
-		Name: "travel",
-		Desc: "带工具的旅行助手 / travel assistant with tools (agent_call_tools.py)",
-		Run:  Run,
+		Name:     "travel",
+		Desc:     "带工具的旅行助手 / travel assistant with tools (agent_call_tools.py)",
+		Category: democli.CatAgent,
+		Order:    30,
+		Needs:    "ZHIPUAI_API_KEY, TAVILY_API_KEY",
+		Run:      Run,
 	})
 }
 
