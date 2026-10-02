@@ -1,0 +1,140 @@
+/* highlight.js 的暗色主题，给代码块上色。
+   The highlight.js dark theme that colours code blocks. */
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0f1011;
+  color: #e4e4e7;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+}
+
+/* Markdown 渲染样式。
+   Tailwind 的 preflight 会清掉 h1/ul/code 等元素的全部默认样式，
+   所以这里必须把它们逐个补回来——否则 LLM 返回的 markdown 渲染出来
+   是一整片没有层次的文字，看起来就像压根没解析。
+
+   Markdown rendering styles.
+   Tailwind's preflight strips every default style from h1, ul, code and friends, so each must be
+   restored here — otherwise markdown from the LLM renders as one flat wall of text that looks
+   exactly as if it had never been parsed at all. */
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0.5em 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md h1 {
+  font-size: 1.4em;
+}
+.md h2 {
+  font-size: 1.25em;
+}
+.md h3 {
+  font-size: 1.1em;
+}
+.md ul,
+.md ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.25em 0;
+}
+.md li > p {
+  margin: 0;
+}
+.md a {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md blockquote {
+  margin: 0.75em 0;
+  border-left: 3px solid #3f3f46;
+  padding-left: 0.9em;
+  color: #a1a1aa;
+}
+.md hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid #27272a;
+}
+.md strong {
+  font-weight: 600;
+  color: #fff;
+}
+.md table {
+  display: block;
+  overflow-x: auto;
+  margin: 0.75em 0;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.md th,
+.md td {
+  border: 1px solid #27272a;
+  padding: 0.35em 0.7em;
+  text-align: left;
+}
+.md th {
+  background: #18181b;
+  font-weight: 600;
+}
+
+/* 行内代码。:not(pre > code) 把代码块里的 code 排除掉，
+   否则代码块内部会套上一层行内代码的背景和内边距。
+   Inline code. The :not() excludes code inside a block; without it, block code would get an
+   extra inline-code background and padding layered on top. */
+.md :not(pre) > code {
+  border-radius: 4px;
+  background: #27272a;
+  padding: 0.15em 0.4em;
+  font-size: 0.875em;
+  color: #e4e4e7;
+}
+.md pre {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid #27272a;
+  background: #0d1117;
+  padding: 2rem 1rem 1rem;
+  font-size: 0.85em;
+  line-height: 1.55;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.md code {
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+}

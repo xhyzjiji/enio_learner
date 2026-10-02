@@ -4,6 +4,18 @@ deploy/mcp-mysql/.env
 
 # 构建产物 / Build output
 /bin/
+web/node_modules/
+# dist 由前端构建生成，但目录本身必须保留：Go 侧用 go:embed 嵌入它，
+# 目录不存在时 go build 会直接失败。
+# dist is produced by the frontend build, yet the directory itself must survive: the Go side
+# embeds it with go:embed and go build fails outright when it is missing.
+web/dist/*
+!web/dist/.gitkeep
+
+# 本地数据库 / Local database files
+*.db
+*.db-wal
+*.db-shm
 .ttadk/
 specs/doc_export/
 
