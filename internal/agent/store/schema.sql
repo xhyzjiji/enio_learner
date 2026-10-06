@@ -234,3 +234,29 @@ CREATE TABLE IF NOT EXISTS config_kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- ───────────────── 命令确认 / command approvals ─────────────────
+
+-- approvals 记录每一次等待人工确认的 execute 命令。
+--
+-- 它必须落库而不是只存内存：确认的本质是"等一个人做决定"，而人可能明天才回来。
+-- checkpoint_id 与 interrupt_id 是恢复执行所需的全部坐标，缺一条都接不回去。
+--
+-- approvals records every execute command awaiting human confirmation.
+--
+-- It must be persisted rather than kept in memory: confirmation means waiting on a person, and
+-- a person may come back tomorrow. checkpoint_id and interrupt_id are the complete coordinates
+-- needed to resume; without either, execution cannot be rejoined.
+CREATE TABLE IF NOT EXISTS approvals (
+    id            TEXT    PRIMARY KEY,
+    session_id    TEXT    NOT NULL,
+    checkpoint_id TEXT    NOT NULL,
+    interrupt_id  TEXT    NOT NULL,
+    command       TEXT    NOT NULL,
+    status        TEXT    NOT NULL DEFAULT 'pending',
+    reason        TEXT    NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    decided_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals (session_id, status, created_at);

@@ -284,6 +284,8 @@ func applyStored(c *Runtime, stored map[string]string) {
 	setInt(stored, "summarize_tokens", &c.SummarizeTokens)
 	setInt(stored, "memory_inject_limit", &c.MemoryInjectLimit)
 	setBool(stored, "enable_execute", &c.EnableExecute)
+	setBool(stored, "require_exec_approval", &c.RequireExecApproval)
+	setInt(stored, "exec_timeout_sec", &c.ExecTimeoutSec)
 	setInt(stored, "max_tool_result_bytes", &c.MaxToolResultBytes)
 	setInt(stored, "max_scheduled_tasks", &c.MaxScheduledTasks)
 	setInt(stored, "min_schedule_interval_sec", &c.MinScheduleIntervalSec)
@@ -345,6 +347,8 @@ func (m *Manager) Update(ctx context.Context, next Runtime) error {
 		"summarize_tokens":          strconv.Itoa(next.SummarizeTokens),
 		"memory_inject_limit":       strconv.Itoa(next.MemoryInjectLimit),
 		"enable_execute":            strconv.FormatBool(next.EnableExecute),
+		"require_exec_approval":     strconv.FormatBool(next.RequireExecApproval),
+		"exec_timeout_sec":          strconv.Itoa(next.ExecTimeoutSec),
 		"max_tool_result_bytes":     strconv.Itoa(next.MaxToolResultBytes),
 		"max_scheduled_tasks":       strconv.Itoa(next.MaxScheduledTasks),
 		"min_schedule_interval_sec": strconv.Itoa(next.MinScheduleIntervalSec),

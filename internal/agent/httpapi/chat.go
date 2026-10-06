@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"github.com/cloudwego/eino/schema"
 
 	"private/agent_basedon_eino/internal/agent/approval"
@@ -144,24 +146,23 @@ func (s *Server) runTurn(ctx context.Context, sse *SSEWriter, req ChatRequest) {
 	// own goroutine and never blocks this turn.
 	s.deps.Titles.EnsureAsync(req.SessionID)
 
-	// 在这一轮开始前登记确认监听，并在结束时注销。
-	// 顺序要紧：必须早于 Engine.Run，否则模型在首个工具调用里就要确认时，
-	// broker 还找不到监听者，命令会以「没有页面在监听」被拒。
+	// 用户发了新消息，就意味着上一轮悬着的确认已经不作数了。
+	// 不作废的话，那张旧卡片会和新一轮并存，点下去恢复的是一段早已过时的执行。
 	//
-	// Register the confirmation listener before this turn starts and unsubscribe at the end.
-	// Order matters: it must precede Engine.Run, otherwise a model that needs confirmation on
-	// its very first tool call would find no listener registered and the command would be
-	// refused as "no page is listening".
-	stopForward := s.forwardApprovals(ctx, sse, req.SessionID)
-	defer stopForward()
+	// A new user message means any confirmation still pending from the previous turn is moot.
+	// Left alone, the stale card would coexist with the new turn, and clicking it would resume
+	// an execution that has long been superseded.
+	s.abandonPending(ctx, req.SessionID)
 
-	iter, _, err := s.deps.Engine.Run(ctx, req.SessionID, req.Message, kernel.TurnOptions{})
+	checkpointID := uuid.NewString()
+	iter, _, err := s.deps.Engine.Run(ctx, req.SessionID, req.Message, checkpointID, kernel.TurnOptions{})
 	if err != nil {
 		sse.SendError(err)
 		return
 	}
 
 	result, pumpErr := PumpEvents(iter, sse)
+	s.finishTurn(ctx, sse, req.SessionID, checkpointID, result)
 	if len(result.Messages) > 0 {
 		if err := s.deps.Sessions.AppendMessages(ctx, req.SessionID, result.Messages); err != nil {
 			s.Logger().Error("persist turn messages failed", "session", req.SessionID, "err", err)
@@ -245,73 +246,178 @@ func mapStoreError(err error, kind, id string) error {
 	return err
 }
 
-// forwardApprovals 把确认请求推送到 SSE 流，返回注销函数。
-// forwardApprovals pushes confirmation requests onto the SSE stream and returns an unsubscribe
-// function.
-func (s *Server) forwardApprovals(ctx context.Context, sse *SSEWriter, sessionID string) func() {
-	if s.deps.Approvals == nil {
-		return func() {}
-	}
-	requests, unsubscribe := s.deps.Approvals.Subscribe(sessionID)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case req, ok := <-requests:
-				if !ok {
-					return
-				}
-				if err := sse.Send(EventApproval, req); err != nil {
-					s.Logger().Warn("push approval request failed",
-						"session", sessionID, "err", err)
-				}
-			case <-ctx.Done():
-				return
-			}
+// finishTurn 处理一轮结束后的善后：要么登记待确认，要么清掉断点。
+//
+// 这两件事必须二选一且都不能漏。漏了登记，中断的那一轮就永远没人能恢复，断点成了
+// 库里的孤儿；漏了清理，每一轮跑完都留下几十 KB 死数据，因为 eino 自己不删。
+//
+// finishTurn handles the aftermath of a turn: either register pending confirmations, or drop
+// the checkpoint.
+//
+// Exactly one of the two must happen, and neither may be skipped. Skipping registration leaves
+// an interrupted turn that nobody can ever resume, its checkpoint orphaned in the database;
+// skipping cleanup leaves tens of kilobytes of dead data behind every turn, because eino does
+// not delete checkpoints itself.
+func (s *Server) finishTurn(
+	ctx context.Context, sse *SSEWriter, sessionID, checkpointID string, result *StreamResult,
+) {
+	if len(result.Pending) == 0 {
+		if err := s.deps.Engine.DropCheckpoint(ctx, checkpointID); err != nil {
+			s.Logger().Warn("drop checkpoint failed", "checkpoint", checkpointID, "err", err)
 		}
-	}()
-
-	return func() {
-		unsubscribe()
-		<-done
+		return
+	}
+	for _, p := range result.Pending {
+		rec, err := s.deps.Approvals.Create(ctx, approval.Record{
+			SessionID:    sessionID,
+			CheckpointID: checkpointID,
+			InterruptID:  p.InterruptID,
+			Command:      p.Command,
+		})
+		if err != nil {
+			sse.SendError(err)
+			return
+		}
+		if err := sse.Send(EventApproval, rec); err != nil {
+			s.Logger().Warn("push approval request failed", "session", sessionID, "err", err)
+		}
 	}
 }
 
-// ApproveRequest 是前端提交的确认结论。
-// ApproveRequest is the verdict submitted by the frontend.
-type ApproveRequest struct {
-	RequestID string `json:"request_id"`
-	Approved  bool   `json:"approved"`
-	Reason    string `json:"reason"`
+// abandonPending 作废一个会话里悬而未决的确认，并删掉它们的断点。
+// abandonPending voids a conversation's outstanding confirmations and drops their checkpoints.
+func (s *Server) abandonPending(ctx context.Context, sessionID string) {
+	cps, err := s.deps.Approvals.AbandonSession(ctx, sessionID)
+	if err != nil {
+		s.Logger().Warn("abandon pending approvals failed", "session", sessionID, "err", err)
+		return
+	}
+	for _, cp := range cps {
+		if err := s.deps.Engine.DropCheckpoint(ctx, cp); err != nil {
+			s.Logger().Warn("drop abandoned checkpoint failed", "checkpoint", cp, "err", err)
+		}
+	}
 }
 
-// handleApprove 接收用户对一条命令的确认或拒绝。
-// handleApprove receives the user's approval or refusal of one command.
-func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
-	var req ApproveRequest
+// ResumeRequest 是前端提交的确认结论。
+// ResumeRequest is the verdict submitted by the frontend.
+type ResumeRequest struct {
+	ApprovalID string `json:"approval_id"`
+	Approved   bool   `json:"approved"`
+	Reason     string `json:"reason"`
+}
+
+// handleResume 接收用户的确认结论，并把被中断的那一轮接着跑完。
+//
+// 它和 /api/chat 一样是 SSE 接口，而不是一个返回 ok 的普通 POST：恢复之后模型还要
+// 继续生成，那些输出得有地方去。做成普通 POST 的话，前端得先确认再另开一条流，
+// 中间那段时间里产生的事件就丢了。
+//
+// handleResume receives the user's verdict and runs the interrupted turn to completion.
+//
+// Like /api/chat it is an SSE endpoint rather than a plain POST returning ok: the model keeps
+// generating after the resume, and that output needs somewhere to go. As a plain POST the
+// frontend would have to confirm first and open a stream second, losing every event produced in
+// between.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	var req ResumeRequest
 	if err := DecodeJSON(r, &req); err != nil {
 		WriteError(w, err)
 		return
 	}
-	if req.RequestID == "" {
-		WriteError(w, &ValidationError{Field: "request_id", Reason: "request_id 不能为空 / request_id must not be empty"})
+	if req.ApprovalID == "" {
+		WriteError(w, &ValidationError{Field: "approval_id", Reason: "approval_id 不能为空 / approval_id must not be empty"})
 		return
 	}
-	if s.deps.Approvals == nil {
-		WriteError(w, errors.New("确认机制未启用 / the confirmation mechanism is not enabled"))
+	rec, err := s.deps.Approvals.Get(r.Context(), req.ApprovalID)
+	if err != nil {
+		if errors.Is(err, approval.ErrNotFound) {
+			WriteError(w, &NotFoundError{Kind: "approval", ID: req.ApprovalID})
+			return
+		}
+		WriteError(w, err)
 		return
 	}
+
 	reason := req.Reason
 	if !req.Approved && reason == "" {
 		reason = "用户拒绝了这条命令 / the user refused this command"
 	}
-	ok := s.deps.Approvals.Resolve(req.RequestID, approval.Decision{Approved: req.Approved, Reason: reason})
-	// 请求已消失说明等待方已经超时放弃。如实告诉前端，让它把卡片标成失效，
-	// 而不是显示「已批准」却什么都没发生。
+	decision := approval.Decision{Approved: req.Approved, Reason: reason}
+
+	// 先落决定再恢复。两个标签页同时点时只有第一下拿到 true，第二下看到记录已不是
+	// pending 便直接返回——否则同一条命令会被恢复两次，也就执行两次。
 	//
-	// A vanished request means the waiting side already timed out. Say so plainly, so the
-	// frontend can mark the card as stale rather than showing "approved" while nothing happens.
-	WriteJSON(w, http.StatusOK, map[string]bool{"resolved": ok})
+	// The verdict is recorded before resuming. With two tabs clicking at once only the first
+	// gets true; the second sees the record is no longer pending and returns — otherwise the
+	// same command would be resumed, and therefore executed, twice.
+	ok, err := s.deps.Approvals.Decide(r.Context(), rec.ID, decision)
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+	if !ok {
+		WriteError(w, &ValidationError{
+			Field:  "approval_id",
+			Reason: "该确认已被处理过 / this confirmation was already handled",
+		})
+		return
+	}
+
+	sse, err := NewSSEWriter(w)
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer cancel()
+	token := s.deps.Interrupts.register(rec.SessionID, cancel)
+	defer s.deps.Interrupts.release(rec.SessionID, token)
+
+	iter, _, err := s.deps.Engine.Resume(
+		runCtx, rec.SessionID, rec.CheckpointID, rec.InterruptID, decision)
+	if err != nil {
+		sse.SendError(err)
+		return
+	}
+
+	result, pumpErr := PumpEvents(iter, sse)
+	if len(result.Messages) > 0 {
+		if err := s.deps.Sessions.AppendMessages(runCtx, rec.SessionID, result.Messages); err != nil {
+			s.Logger().Error("persist resumed messages failed", "session", rec.SessionID, "err", err)
+		}
+	}
+	s.finishTurn(runCtx, sse, rec.SessionID, rec.CheckpointID, result)
+	if result.Compressed {
+		s.afterCompression(runCtx, sse, rec.SessionID)
+	}
+	if pumpErr != nil {
+		if errors.Is(pumpErr, context.Canceled) {
+			result.Interrupted = true
+		} else {
+			sse.SendError(pumpErr)
+			return
+		}
+	}
+	_ = sse.Send(EventDone, DonePayload{SessionID: rec.SessionID, Interrupted: result.Interrupted})
+}
+
+// handleListApprovals 返回一个会话里还在等待的确认。
+// 页面加载会话时调它，待确认卡片因此能在刷新或后端重启之后重现。
+//
+// handleListApprovals returns a conversation's still-pending confirmations. The UI calls it when
+// loading a conversation, which is how a pending card survives a refresh or a backend restart.
+func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	sessionID, err := RequirePath(r, "id")
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+	list, err := s.deps.Approvals.ListPending(r.Context(), sessionID)
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"approvals": list})
 }

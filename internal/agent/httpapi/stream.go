@@ -11,6 +11,8 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/schema"
+
+	"private/agent_basedon_eino/internal/agent/approval"
 )
 
 // SSE 事件类型。
@@ -149,6 +151,10 @@ type StreamResult struct {
 	// Interrupted 表示本轮被中断。
 	// Interrupted reports that the turn was interrupted.
 	Interrupted bool
+	// Pending 是本轮产生的待确认点。有值就意味着这一轮没跑完，在等人决定。
+	// Pending holds the confirmation points raised this turn. A non-empty value means the turn
+	// did not finish and is waiting on a human.
+	Pending []PendingInterrupt
 	// Compressed 表示本轮触发过上下文压缩。
 	// Compressed reports that context compression fired during this turn.
 	Compressed bool
@@ -193,6 +199,14 @@ func PumpEvents(iter *adk.AsyncIterator[*adk.AgentEvent], sse *SSEWriter) (*Stre
 	}
 }
 
+// PendingInterrupt 是一个待人工确认的中断点。
+// PendingInterrupt is one interrupt point awaiting human confirmation.
+type PendingInterrupt struct {
+	InterruptID string
+	Kind        string
+	Command     string
+}
+
 // handleAction 处理动作事件，目前只关心中断与压缩。
 // handleAction processes action events; only interruption and compression matter today.
 func handleAction(action *adk.AgentAction, sse *SSEWriter, res *StreamResult) error {
@@ -201,6 +215,21 @@ func handleAction(action *adk.AgentAction, sse *SSEWriter, res *StreamResult) er
 	}
 	if action.Interrupted != nil {
 		res.Interrupted = true
+		for _, ic := range action.Interrupted.InterruptContexts {
+			info, ok := ic.Info.(approval.AskInfo)
+			if !ok {
+				// 不是我们发起的中断。记录下来便于排查，但不当成待确认点——
+				// 凭空造一张卡片让用户去批准一个我们看不懂的东西更糟。
+				//
+				// An interrupt we did not raise. Noted for diagnosis but not treated as a
+				// confirmation point: inventing a card asking the user to approve something we
+				// cannot describe would be worse.
+				continue
+			}
+			res.Pending = append(res.Pending, PendingInterrupt{
+				InterruptID: ic.ID, Kind: info.Kind, Command: info.Command,
+			})
+		}
 	}
 	ca, ok := action.CustomizedAction.(*summarization.CustomizedAction)
 	if !ok {

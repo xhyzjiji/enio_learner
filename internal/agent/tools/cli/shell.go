@@ -2,13 +2,13 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/adk/filesystem"
+	"github.com/cloudwego/eino/compose"
 
 	"private/agent_basedon_eino/internal/agent/approval"
 	"private/agent_basedon_eino/internal/agent/config"
@@ -163,7 +163,9 @@ type Shell struct {
 	runner  *Runner
 	store   *Store
 	runtime func() config.Runtime
-	broker  *approval.Broker
+	// approvals 为 nil 时确认机制整体关闭。
+	// A nil approvals disables the confirmation mechanism entirely.
+	approvals bool
 }
 
 // NewShell 构造 execute 工具的后端。
@@ -184,8 +186,8 @@ type Shell struct {
 // runtime is a function rather than a config.Runtime value precisely for this reason: passing a
 // value would freeze the configuration as it stood at startup, and edits made in the UI would
 // silently have no effect.
-func NewShell(runner *Runner, store *Store, runtime func() config.Runtime, broker *approval.Broker) *Shell {
-	return &Shell{runner: runner, store: store, runtime: runtime, broker: broker}
+func NewShell(runner *Runner, store *Store, runtime func() config.Runtime, approvals bool) *Shell {
+	return &Shell{runner: runner, store: store, runtime: runtime, approvals: approvals}
 }
 
 // Execute 校验并执行一条命令串。
@@ -206,8 +208,27 @@ func (s *Shell) Execute(ctx context.Context, in *filesystem.ExecuteRequest) (*fi
 	// The command string is interpreted by sh -c, yet the environment is still whitelisted and
 	// the working directory is still confined to the workspace.
 	rt := s.runtime()
-	if err := s.confirm(ctx, rt, in.Command); err != nil {
+	// 这一步必须排在 confirm 前面：一条注定会把 \n 原样写进目标的命令，
+	// 没有理由先去打扰用户确认。
+	//
+	// This must precede confirm: there is no reason to interrupt the user for approval of a
+	// command that is guaranteed to write \n verbatim into its target.
+	if refusal := inlineTextRefusal(in.Command); refusal != "" {
+		code := 126
+		return &filesystem.ExecuteResponse{Output: refusal, ExitCode: &code}, nil
+	}
+	if refusal, err := s.confirm(ctx, rt, in.Command); err != nil {
 		return nil, err
+	} else if refusal != "" {
+		// 被拒绝时返回正常响应而非错误：模型需要把"用户拒绝了"当成一条可读的结果
+		// 来调整思路，而不是收到一个看起来像故障的报错。退出码用 126，与 shell 里
+		// "命令存在但不可执行"的含义一致。
+		//
+		// A refusal returns a normal response rather than an error: the model needs to read
+		// "the user refused" as an ordinary result and adjust, not receive something that looks
+		// like a malfunction. Exit code 126 matches the shell's "found but not executable".
+		code := 126
+		return &filesystem.ExecuteResponse{Output: refusal, ExitCode: &code}, nil
 	}
 	res, err := s.runner.Run(ctx, &ExecRequest{
 		Command:        "/bin/sh",
@@ -226,48 +247,69 @@ func (s *Shell) Execute(ctx context.Context, in *filesystem.ExecuteRequest) (*fi
 	}, nil
 }
 
-// confirm 在执行前征求人工同意。
+// confirm 在执行前征求人工同意，返回拒绝说明（空串表示放行）。
 //
-// 拒绝时返回的是 error 而非空输出：这条错误会经由工具错误中间件变成普通的工具结果
-// 交还模型，模型读到"用户拒绝了"之后会换个思路，而不是以为命令跑了但没产出。
+// 它被同一次工具调用执行**两遍**，分属两个进程时期：
 //
-// confirm seeks human consent before execution.
+//  1. 首次：没有中断状态，于是返回一个中断信号。eino 据此把整条执行链序列化进
+//     checkpoint 并结束这一轮。此时没有任何 goroutine 在等待。
+//  2. 恢复：用户做出决定后，调用方带着决定恢复执行，同一行代码再跑一次，
+//     这次拿到的是决定本身。
 //
-// A refusal returns an error rather than empty output: the tool-error middleware turns it into
-// an ordinary tool result handed back to the model, which then reads "the user refused" and
-// changes approach, instead of assuming the command ran but produced nothing.
-func (s *Shell) confirm(ctx context.Context, rt config.Runtime, command string) error {
-	if !rt.RequireExecApproval || s.broker == nil {
-		return nil
-	}
-	sessionID := approval.SessionFrom(ctx)
-	if sessionID == "" {
-		// 没有会话上下文意味着这次执行不来自交互对话（例如定时任务）。
-		// 无人可确认时一律拒绝。
-		// An absent conversation context means this execution did not come from an interactive
-		// chat (a scheduled task, for instance). With nobody to ask, always refuse.
-		return fmt.Errorf(
-			"该执行环境无法进行人工确认，命令未执行 / this execution context cannot request " +
-				"human confirmation, so the command was not run")
+// 第二步里有个必须守住的分支：若本次恢复的目标不是自己（isResume 为假），必须
+// **重新中断**而不是继续。一轮里可能有多个中断点，别人被恢复时自己若放行，
+// 就等于一次未经确认的执行。
+//
+// confirm seeks human consent before execution, returning a refusal message (empty means go).
+//
+// It runs TWICE for the same tool call, in what may be two different process lifetimes:
+//
+//  1. First pass: no interrupt state, so it returns an interrupt signal. eino serializes the
+//     whole execution chain into a checkpoint and ends the turn. No goroutine is left waiting.
+//  2. Resume: once the user decides, the caller resumes with that decision and this same line
+//     runs again, this time receiving the verdict.
+//
+// One branch in step 2 must hold: if this component is not the target of the resume
+// (isResume false), it MUST re-interrupt rather than proceed. A turn may hold several interrupt
+// points, and proceeding while someone else is resumed would be an unconfirmed execution.
+func (s *Shell) confirm(ctx context.Context, rt config.Runtime, command string) (string, error) {
+	if !rt.RequireExecApproval || !s.approvals {
+		return "", nil
 	}
 
-	decision, err := s.broker.Ask(ctx, sessionID, command)
-	if errors.Is(err, approval.ErrNoReviewer) {
-		return fmt.Errorf(
-			"没有页面在监听本会话，无法确认命令，未执行 / no page is listening on this " +
-				"conversation, so the command could not be confirmed and was not run")
-	}
-	if err != nil {
-		return err
-	}
-	if !decision.Approved {
-		reason := decision.Reason
+	wasInterrupted, _, _ := compose.GetInterruptState[any](ctx)
+	if wasInterrupted {
+		isResume, hasData, raw := compose.GetResumeContext[any](ctx)
+		if !isResume || !hasData {
+			return "", compose.Interrupt(ctx, approval.AskInfo{Kind: approval.KindExec, Command: command})
+		}
+		d, ok := raw.(approval.Decision)
+		if !ok {
+			return "", fmt.Errorf("恢复数据类型不是确认决定 / resume data is not an approval decision: %T", raw)
+		}
+		if d.Approved {
+			return "", nil
+		}
+		reason := d.Reason
 		if reason == "" {
 			reason = "用户拒绝了这条命令 / the user refused this command"
 		}
-		return fmt.Errorf("命令未执行：%s / command not run: %s", reason, reason)
+		return "命令未执行：" + reason + " / command not run: " + reason, nil
 	}
-	return nil
+
+	if approval.SessionFrom(ctx) == "" {
+		// 没有会话上下文意味着这次执行不来自交互对话（例如定时任务）。无人可确认时
+		// 一律拒绝，而且必须在中断**之前**拒绝：定时任务中断了也没人会去恢复它，
+		// 那一轮会直接卡死并留下一个永远不会被消费的 checkpoint。
+		//
+		// An absent conversation context means this execution did not come from an interactive
+		// chat (a scheduled task, for instance). With nobody to ask, always refuse — and refuse
+		// BEFORE interrupting: nobody would ever resume a scheduled task, so it would simply
+		// stall and leave behind a checkpoint that is never consumed.
+		return "该执行环境无法进行人工确认，命令未执行 / this execution context cannot request " +
+			"human confirmation, so the command was not run", nil
+	}
+	return "", compose.Interrupt(ctx, approval.AskInfo{Kind: approval.KindExec, Command: command})
 }
 
 // 编译期确认 Shell 满足 filesystem.Shell。

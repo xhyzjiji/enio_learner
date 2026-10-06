@@ -1,16 +1,16 @@
-import { useState, type ReactNode } from 'react'
-import { McpSection } from './McpSection'
-import { CliSection } from './CliSection'
-import { SkillSection } from './SkillSection'
-import { RagSection } from './RagSection'
-import { MemorySection } from './MemorySection'
-import { TaskSection } from './TaskSection'
-import { ModelSection } from './ModelSection'
+import { useState, type ReactNode } from "react";
+import { McpSection } from "./McpSection";
+import { CliSection } from "./CliSection";
+import { SkillSection } from "./SkillSection";
+import { RagSection } from "./RagSection";
+import { MemorySection } from "./MemorySection";
+import { TaskSection } from "./TaskSection";
+import { ModelSection } from "./ModelSection";
 
 interface SectionProps {
-  title: string
-  children?: ReactNode
-  hint?: string
+  title: string;
+  children?: ReactNode;
+  hint?: string;
 }
 
 /**
@@ -21,7 +21,7 @@ interface SectionProps {
  * sidebar (documents, MCP, local commands, skills, scheduled tasks, model) are wrapped in it.
  */
 export function Section({ title, children, hint }: SectionProps) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(false);
   return (
     <div className="border-b border-edge/60">
       <button
@@ -29,16 +29,16 @@ export function Section({ title, children, hint }: SectionProps) {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-zinc-300 hover:text-white"
       >
-        <span className="text-xs text-zinc-600">{open ? '▾' : '▸'}</span>
+        <span className="text-xs text-zinc-600">{open ? "▾" : "▸"}</span>
         <span className="flex-1">{title}</span>
       </button>
       {open && (
         <div className="px-3 pb-3 text-xs text-zinc-500">
-          {children ?? hint ?? '尚未实现 / not implemented yet'}
+          {children ?? hint ?? "尚未实现 / not implemented yet"}
         </div>
       )}
     </div>
-  )
+  );
 }
 
 export function ConfigPanel() {
@@ -69,5 +69,5 @@ export function ConfigPanel() {
         <ModelSection />
       </Section>
     </div>
-  )
+  );
 }

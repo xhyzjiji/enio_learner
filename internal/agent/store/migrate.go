@@ -13,7 +13,7 @@ var schemaSQL string
 // schemaVersion 是当前期望的表结构版本。新增迁移时递增，并在 migrations 中补一条。
 // schemaVersion is the schema version this build expects. Bump it when adding a migration and
 // append the corresponding entry to migrations.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migration 是一次结构变更。version 为该迁移完成后的目标版本号。
 // migration is a single schema change. version is the target version after it is applied.
@@ -24,7 +24,27 @@ type migration struct {
 
 // migrations 保存 v1 之后的增量变更。v1 由 schema.sql 一次建全。
 // migrations holds incremental changes after v1. v1 itself is created wholesale by schema.sql.
-var migrations []migration
+var migrations = []migration{
+	{
+		// v2：命令确认落库，支持跨进程恢复。
+		// v2: persist command approvals so execution can resume across process restarts.
+		version: 2,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS approvals (
+				id            TEXT    PRIMARY KEY,
+				session_id    TEXT    NOT NULL,
+				checkpoint_id TEXT    NOT NULL,
+				interrupt_id  TEXT    NOT NULL,
+				command       TEXT    NOT NULL,
+				status        TEXT    NOT NULL DEFAULT 'pending',
+				reason        TEXT    NOT NULL DEFAULT '',
+				created_at    INTEGER NOT NULL,
+				decided_at    INTEGER NOT NULL DEFAULT 0
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals (session_id, status, created_at)`,
+		},
+	},
+}
 
 // Migrate 建表并把结构推进到 schemaVersion。
 //

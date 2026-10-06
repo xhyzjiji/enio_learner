@@ -117,8 +117,8 @@ func run() error {
 	rt := cfgMgr.Current()
 	cliStore := cli.NewStore(db)
 	runner := cli.NewRunner(workspace)
-	approvals := approval.NewBroker()
-	shell := cli.NewShell(runner, cliStore, cfgMgr.Current, approvals)
+	approvals := approval.NewStore(db)
+	shell := cli.NewShell(runner, cliStore, cfgMgr.Current, true)
 
 	mcpMgr := mcp.NewManager(db, logger)
 	defer mcpMgr.Close()

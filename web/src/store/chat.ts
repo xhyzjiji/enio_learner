@@ -1,6 +1,11 @@
-import { create } from 'zustand'
-import { api, streamChat } from '@/api/client'
-import type { Session, StoredMessage, ApprovalRequest } from '@/api/types'
+import { create } from "zustand";
+import { api, streamChat, streamResume } from "@/api/client";
+import type {
+  Session,
+  StoredMessage,
+  ApprovalRequest,
+  ChatEvent,
+} from "@/api/types";
 
 /**
  * 界面上的一条消息。它比后端的 StoredMessage 多一些只在前端存在的状态：
@@ -10,45 +15,46 @@ import type { Session, StoredMessage, ApprovalRequest } from '@/api/types'
  * backend's StoredMessage: content still being streamed, and in-flight tool calls.
  */
 export interface ChatMessage {
-  key: string
-  role: 'user' | 'assistant' | 'tool' | 'system' | 'approval'
-  content: string
-  reasoning?: string
-  toolCalls?: { id: string; name: string; arguments: string }[]
-  toolCallId?: string
-  toolName?: string
-  streaming?: boolean
+  key: string;
+  role: "user" | "assistant" | "tool" | "system" | "approval";
+  content: string;
+  reasoning?: string;
+  toolCalls?: { id: string; name: string; arguments: string }[];
+  toolCallId?: string;
+  toolName?: string;
+  streaming?: boolean;
   // approval 角色专用：待确认的命令请求。
   // Only for the approval role: the command request awaiting confirmation.
-  approval?: ApprovalRequest
+  approval?: ApprovalRequest;
 }
 
 interface ChatState {
-  sessions: Session[]
-  currentId: string | null
-  messages: ChatMessage[]
-  sending: boolean
-  notice: string | null
-  error: string | null
+  sessions: Session[];
+  currentId: string | null;
+  messages: ChatMessage[];
+  sending: boolean;
+  notice: string | null;
+  error: string | null;
 
-  loadSessions: () => Promise<void>
-  selectSession: (id: string) => Promise<void>
-  newSession: () => Promise<void>
-  renameSession: (id: string, title: string) => Promise<void>
-  deleteSession: (id: string) => Promise<void>
-  send: (text: string) => Promise<void>
-  interrupt: () => Promise<void>
-  dismissError: () => void
+  loadSessions: () => Promise<void>;
+  selectSession: (id: string) => Promise<void>;
+  newSession: () => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
+  deleteSession: (id: string) => Promise<void>;
+  send: (text: string) => Promise<void>;
+  resolveApproval: (approvalId: string, approved: boolean) => Promise<void>;
+  interrupt: () => Promise<void>;
+  dismissError: () => void;
 }
 
 /** 当前对话的中止控制器，不进 store —— 它不是渲染依赖。
  *  Abort controller of the active turn. It stays out of the store because nothing renders it. */
-let abort: AbortController | null = null
+let abort: AbortController | null = null;
 
 function toChatMessage(m: StoredMessage): ChatMessage {
   return {
     key: `db-${m.id}`,
-    role: m.role as ChatMessage['role'],
+    role: m.role as ChatMessage["role"],
     content: m.content,
     toolCalls: m.tool_calls?.map((tc) => ({
       id: tc.id,
@@ -57,7 +63,7 @@ function toChatMessage(m: StoredMessage): ChatMessage {
     })),
     toolCallId: m.tool_call_id,
     toolName: m.tool_name,
-  }
+  };
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -72,164 +78,277 @@ export const useChat = create<ChatState>((set, get) => ({
 
   loadSessions: async () => {
     try {
-      const sessions = await api.listSessions()
-      set({ sessions })
+      const sessions = await api.listSessions();
+      set({ sessions });
       if (!get().currentId && sessions.length > 0) {
-        await get().selectSession(sessions[0].id)
+        await get().selectSession(sessions[0].id);
       }
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
   },
 
   selectSession: async (id) => {
-    set({ currentId: id, messages: [], notice: null })
+    set({ currentId: id, messages: [], notice: null });
     try {
-      const messages = await api.listMessages(id)
+      const messages = await api.listMessages(id);
       // 切换过程中用户可能又点了别的会话，这时旧请求的结果必须丢弃，
       // 否则会把 A 会话的消息渲染到 B 会话里。
       // The user may have picked another session meanwhile; the stale response must be dropped,
       // otherwise session A's messages would render inside session B.
-      if (get().currentId !== id) return
-      set({ messages: messages.map(toChatMessage) })
+      // 待确认的命令和历史消息一起取：它是会话的持久状态，不是上一条流的残留。
+      // 后端重启过也无所谓，记录在库里，断点也在库里。
+      //
+      // Pending confirmations are fetched alongside the history: they are persistent state of
+      // the conversation, not leftovers of a previous stream. A backend restart in between
+      // changes nothing — the record is in the database and so is the checkpoint.
+      const pending = await api.listApprovals(id);
+      if (get().currentId !== id) return;
+      set({
+        messages: [
+          ...messages.map(toChatMessage),
+          ...pending.map((a): ChatMessage => ({
+            key: `ap-${a.id}`,
+            role: "approval",
+            content: "",
+            approval: a,
+          })),
+        ],
+      });
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
   },
 
   newSession: async () => {
     try {
-      const s = await api.createSession()
-      set((st) => ({ sessions: [s, ...st.sessions], currentId: s.id, messages: [], notice: null }))
+      const s = await api.createSession();
+      set((st) => ({
+        sessions: [s, ...st.sessions],
+        currentId: s.id,
+        messages: [],
+        notice: null,
+      }));
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
   },
 
   renameSession: async (id, title) => {
     try {
-      const s = await api.renameSession(id, title)
-      set((st) => ({ sessions: st.sessions.map((x) => (x.id === id ? s : x)) }))
+      const s = await api.renameSession(id, title);
+      set((st) => ({
+        sessions: st.sessions.map((x) => (x.id === id ? s : x)),
+      }));
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
   },
 
   deleteSession: async (id) => {
     try {
-      await api.deleteSession(id)
-      const rest = get().sessions.filter((s) => s.id !== id)
-      set({ sessions: rest })
+      await api.deleteSession(id);
+      const rest = get().sessions.filter((s) => s.id !== id);
+      set({ sessions: rest });
       if (get().currentId === id) {
-        set({ currentId: null, messages: [] })
-        if (rest.length > 0) await get().selectSession(rest[0].id)
+        set({ currentId: null, messages: [] });
+        if (rest.length > 0) await get().selectSession(rest[0].id);
       }
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
   },
 
   send: async (text) => {
-    let sessionId = get().currentId
+    let sessionId = get().currentId;
     if (!sessionId) {
-      await get().newSession()
-      sessionId = get().currentId
-      if (!sessionId) return
+      await get().newSession();
+      sessionId = get().currentId;
+      if (!sessionId) return;
     }
 
-    const turn = Date.now()
+    const turn = Date.now();
     set((st) => ({
       sending: true,
       notice: null,
       error: null,
       messages: [
         ...st.messages,
-        { key: `u-${turn}`, role: 'user', content: text },
-        { key: `a-${turn}`, role: 'assistant', content: '', streaming: true },
+        { key: `u-${turn}`, role: "user", content: text },
+        { key: `a-${turn}`, role: "assistant", content: "", streaming: true },
       ],
-    }))
+    }));
 
-    abort = new AbortController()
-    const assistantKey = `a-${turn}`
-
-    const patchAssistant = (fn: (m: ChatMessage) => ChatMessage) =>
-      set((st) => ({ messages: st.messages.map((m) => (m.key === assistantKey ? fn(m) : m)) }))
-
+    abort = new AbortController();
     try {
-      for await (const ev of streamChat(sessionId, text, abort.signal)) {
-        switch (ev.event) {
-          case 'message_delta':
-            patchAssistant((m) => ({
-              ...m,
-              content: m.content + ev.data.content,
-              reasoning: ev.data.reasoning ? (m.reasoning ?? '') + ev.data.reasoning : m.reasoning,
-            }))
-            break
-          case 'tool_call':
-            patchAssistant((m) => ({ ...m, toolCalls: [...(m.toolCalls ?? []), ev.data] }))
-            break
-          case 'tool_result':
-            set((st) => ({
-              messages: [
-                ...st.messages,
-                {
-                  key: `t-${ev.data.id}`,
-                  role: 'tool',
-                  content: ev.data.content,
-                  toolCallId: ev.data.id,
-                  toolName: ev.data.name,
-                },
-              ],
-            }))
-            break
-          case 'approval_request':
-            // 作为一条独立消息插入，而不是弹窗。确认请求是对话的一部分——
-            // 你三天后回看这个会话，应该能看到当时同意过什么。
-            // Inserted as its own message rather than a modal. A confirmation is part of the
-            // conversation: reviewing it three days later, you should still see what you agreed to.
-            set((st) => ({
-              messages: [
-                ...st.messages,
-                { key: `ap-${ev.data.id}`, role: 'approval', content: '', approval: ev.data },
-              ],
-            }))
-            break
-          case 'compression':
-            set({ notice: ev.data.message })
-            break
-          case 'error':
-            set({ error: ev.data.message })
-            break
-          case 'done':
-            if (ev.data.interrupted) set({ notice: '本轮已中断 / this turn was interrupted' })
-            break
-        }
-      }
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') set({ error: (e as Error).message })
+      await consume(
+        streamChat(sessionId, text, abort.signal),
+        `a-${turn}`,
+        set,
+        get,
+      );
     } finally {
-      abort = null
-      patchAssistant((m) => ({ ...m, streaming: false }))
-      set({ sending: false })
-      // 标题是后端异步生成的，本轮结束时刷一次列表把新标题取回来。
-      // Titles are generated asynchronously on the backend; refreshing the list at the end of
-      // the turn pulls the new one in.
-      void get().loadSessions()
+      abort = null;
+      void get().loadSessions();
+    }
+  },
+
+  resolveApproval: async (approvalId, approved) => {
+    const turn = Date.now();
+    set((st) => ({
+      sending: true,
+      error: null,
+      // 决定已经做出，把卡片就地标记掉，再挂一条新的助手消息承接后续输出。
+      // The verdict is in: mark the card in place and attach a fresh assistant message to
+      // receive whatever comes next.
+      messages: [
+        ...st.messages.map((m) =>
+          m.approval?.id === approvalId
+            ? {
+                ...m,
+                approval: {
+                  ...m.approval,
+                  status: approved ? "approved" : "denied",
+                } as ApprovalRequest,
+              }
+            : m,
+        ),
+        {
+          key: `a-${turn}`,
+          role: "assistant" as const,
+          content: "",
+          streaming: true,
+        },
+      ],
+    }));
+
+    abort = new AbortController();
+    try {
+      await consume(
+        streamResume(approvalId, approved, abort.signal),
+        `a-${turn}`,
+        set,
+        get,
+      );
+    } finally {
+      abort = null;
+      void get().loadSessions();
     }
   },
 
   interrupt: async () => {
-    const id = get().currentId
-    if (!id) return
+    const id = get().currentId;
+    if (!id) return;
     // 先让后端取消整条调用链，再中止本地这条 fetch。顺序反过来的话，
     // 浏览器断开连接了，服务端那轮还在继续跑并继续计费。
     // Ask the backend to cancel the whole call chain first, then abort the local fetch. The
     // other order disconnects the browser while the server-side turn keeps running, and billing.
     try {
-      await api.interrupt(id)
+      await api.interrupt(id);
     } catch (e) {
-      set({ error: (e as Error).message })
+      set({ error: (e as Error).message });
     }
-    abort?.abort()
+    abort?.abort();
   },
-}))
+}));
+
+type SetState = (
+  partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>),
+) => void;
+type GetState = () => ChatState;
+
+/**
+ * 消费一条事件流，把事件落到消息列表上。
+ *
+ * 普通对话和确认后的恢复共用它。两者在事件层面没有任何区别——恢复只是换了个起点，
+ * 后面照样是模型继续生成、继续调工具、甚至再要一次确认。分成两份实现迟早会漂移，
+ * 而漂移出来的 bug 会表现成"某些情况下恢复之后工具卡片不显示"这类难查的问题。
+ *
+ * Consumes one event stream, applying events to the message list.
+ *
+ * Ordinary turns and post-confirmation resumes share it. At the event level the two are
+ * identical — a resume merely starts elsewhere, after which the model goes on generating,
+ * calling tools, possibly asking for confirmation again. Two copies would drift, and the drift
+ * would show up as "the tool card sometimes doesn't appear after resuming": hard to track down.
+ */
+async function consume(
+  stream: AsyncGenerator<ChatEvent>,
+  assistantKey: string,
+  set: SetState,
+  get: GetState,
+): Promise<void> {
+  const patchAssistant = (fn: (m: ChatMessage) => ChatMessage) =>
+    set((st) => ({
+      messages: st.messages.map((m) => (m.key === assistantKey ? fn(m) : m)),
+    }));
+
+  try {
+    for await (const ev of stream) {
+      switch (ev.event) {
+        case "message_delta":
+          patchAssistant((m) => ({
+            ...m,
+            content: m.content + ev.data.content,
+            reasoning: ev.data.reasoning
+              ? (m.reasoning ?? "") + ev.data.reasoning
+              : m.reasoning,
+          }));
+          break;
+        case "tool_call":
+          patchAssistant((m) => ({
+            ...m,
+            toolCalls: [...(m.toolCalls ?? []), ev.data],
+          }));
+          break;
+        case "tool_result":
+          set((st) => ({
+            messages: [
+              ...st.messages,
+              {
+                key: `t-${ev.data.id}`,
+                role: "tool",
+                content: ev.data.content,
+                toolCallId: ev.data.id,
+                toolName: ev.data.name,
+              },
+            ],
+          }));
+          break;
+        case "approval_request":
+          // 作为一条独立消息插入，而不是弹窗。确认请求是对话的一部分——
+          // 你三天后回看这个会话，应该能看到当时同意过什么。
+          // Inserted as its own message rather than a modal. A confirmation is part of the
+          // conversation: reviewing it later, you should still see what you agreed to.
+          set((st) => ({
+            messages: [
+              ...st.messages,
+              {
+                key: `ap-${ev.data.id}`,
+                role: "approval",
+                content: "",
+                approval: ev.data,
+              },
+            ],
+          }));
+          break;
+        case "compression":
+          set({ notice: ev.data.message });
+          break;
+        case "error":
+          set({ error: ev.data.message });
+          break;
+        case "done":
+          if (ev.data.interrupted)
+            set({ notice: "本轮已中断 / this turn was interrupted" });
+          break;
+      }
+    }
+  } catch (e) {
+    if ((e as Error).name !== "AbortError")
+      set({ error: (e as Error).message });
+  } finally {
+    patchAssistant((m) => ({ ...m, streaming: false }));
+    set({ sending: false });
+    void get;
+  }
+}

@@ -56,7 +56,7 @@ type Deps struct {
 	Memory     *memory.Store
 	Tasks      *schedule.Store
 	Scheduler  *schedule.Scheduler
-	Approvals  *approval.Broker
+	Approvals  *approval.Store
 }
 
 // NewServer 构造服务器并注册全部路由。
@@ -82,7 +82,8 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 	s.mux.HandleFunc("POST /api/chat/interrupt", s.handleInterrupt)
-	s.mux.HandleFunc("POST /api/chat/approve", s.handleApprove)
+	s.mux.HandleFunc("POST /api/chat/resume", s.handleResume)
+	s.mux.HandleFunc("GET /api/sessions/{id}/approvals", s.handleListApprovals)
 
 	s.mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)

@@ -262,6 +262,9 @@ func (w *Workspace) Read(_ context.Context, req *filesystem.ReadRequest) (*files
 // Write 写入文件，必要时创建父目录。
 // Write writes a file, creating parent directories when needed.
 func (w *Workspace) Write(_ context.Context, req *filesystem.WriteRequest) error {
+	if refusal := escapedNewlineRefusal(req.Content); refusal != "" {
+		return &kernel.ToolRefusal{Reason: refusal}
+	}
 	target, err := w.resolve(req.FilePath)
 	if err != nil {
 		return err

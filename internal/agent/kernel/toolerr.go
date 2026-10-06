@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
@@ -72,6 +73,28 @@ func recoverableToolErrors(logger *slog.Logger) compose.ToolMiddleware {
 	}
 }
 
+// ToolRefusal 表示工具主动拒绝了这次调用，而不是执行时出了故障。
+//
+// 它和 recoverableMarkers 的文本匹配是两回事：那条路处理的是别人抛出的、我们只能靠
+// 字符串去猜的错误；这条路是我们自己的工具想对模型说一段话。既然话是我们写的，
+// 就该原样送达——套上"工具调用失败，请检查参数"的模板只会稀释它，
+// 而这类拒绝的全部价值就在于那段具体的改法说明。
+//
+// ToolRefusal signals that a tool deliberately declined the call rather than malfunctioning.
+//
+// It is distinct from the text matching in recoverableMarkers: that path copes with errors
+// raised elsewhere, which we can only guess at by substring. This path is our own tool wanting
+// to say something to the model. Since we wrote the message, it should arrive verbatim —
+// wrapping it in a "tool call failed, check the arguments" template only dilutes it, and the
+// entire value of such a refusal lies in its specific instructions for putting things right.
+type ToolRefusal struct {
+	// Reason 是给模型看的完整说明，必须包含可执行的改法。
+	// Reason is the full explanation shown to the model and must include an actionable fix.
+	Reason string
+}
+
+func (e *ToolRefusal) Error() string { return e.Reason }
+
 // recoverableMarkers 是可恢复失败的识别特征。
 //
 // 按错误文本匹配而非错误类型，是因为这些错误来自 eino 内置中间件和各路 MCP server，
@@ -100,6 +123,32 @@ var recoverableMarkers = []string{
 func recoverHint(toolName string, err error) (string, bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
+	}
+	// 中断信号必须原样穿过去。它走的是 error 通道，但它不是失败——execute 用它请求
+	// 人工确认。一旦被当成错误转成文本，框架就收不到中断，checkpoint 不会生成，
+	// 而模型会读到一段像报错的文字然后自顾自编一个结果：命令没执行，用户却以为执行了。
+	//
+	// 这里用 errors.As 判定而不是匹配错误文本。现有标记词里的 "required" 离误伤
+	// 只有一步之遥，而这类误伤的表现是"确认功能偶尔莫名失灵"，极难追查。
+	//
+	// Interrupt signals must pass through untouched. They travel on the error channel yet are
+	// not failures — execute uses one to request human confirmation. Converted into text, the
+	// framework never sees the interrupt, no checkpoint is written, and the model reads
+	// something that looks like an error and invents a result: the command never ran, but the
+	// user believes it did.
+	//
+	// Detection is by errors.As rather than text matching. The existing marker "required" sits
+	// one coincidence away from a false positive, and such a false positive would present as
+	// "confirmation occasionally stops working for no reason" — nearly impossible to track down.
+	var interrupt *adk.InterruptSignal
+	if errors.As(err, &interrupt) {
+		return "", false
+	}
+	// 工具主动拒绝：原样交还，不套模板。
+	// A deliberate refusal is handed back verbatim, with no template around it.
+	var refusal *ToolRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Reason, true
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)

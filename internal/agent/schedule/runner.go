@@ -82,7 +82,13 @@ func (r *Runner) Execute(ctx context.Context, t *Task) (string, error) {
 		return "", err
 	}
 
-	iter, _, err := r.engine.Run(runCtx, sessionID, prompt, opts)
+	// 定时任务不传 checkpoint ID：它没有人工确认这条路径（DisableShell 已经让
+	// execute 根本挂不上），不会产生中断，也就没有可恢复的断点。
+	//
+	// A scheduled task passes no checkpoint ID: it has no human-confirmation path at all
+	// (DisableShell keeps execute from being mounted), so it never interrupts and has nothing
+	// to resume from.
+	iter, _, err := r.engine.Run(runCtx, sessionID, prompt, "", opts)
 	if err != nil {
 		return "", err
 	}
