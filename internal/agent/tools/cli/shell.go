@@ -2,11 +2,16 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk/filesystem"
+
+	"private/agent_basedon_eino/internal/agent/approval"
+	"private/agent_basedon_eino/internal/agent/config"
 )
 
 // PolicyAction 是策略规则的动作。
@@ -155,24 +160,32 @@ func (v *CommandValidator) Validate(command string) error {
 // apply here, which is exactly why this tool is off by default and force-disabled inside
 // scheduled tasks.
 type Shell struct {
-	runner   *Runner
-	store    *Store
-	maxBytes int
+	runner  *Runner
+	store   *Store
+	runtime func() config.Runtime
+	broker  *approval.Broker
 }
 
 // NewShell 构造 execute 工具的后端。
 //
-// 策略在每次执行前从数据库现读，不缓存：用户在页面上加一条拒绝规则，期望的是
-// 下一次执行就生效，而不是重启之后。策略表很小，这次读取的代价相对子进程启动
-// 可以忽略。
+// 策略与限额都在每次执行前现读，不缓存：用户在页面上加一条拒绝规则、或把超时调长，
+// 期望的是下一次执行就生效，而不是重启之后。读一次策略表的代价相对子进程启动可以忽略。
+//
+// runtime 传函数而非 config.Runtime 值，正是为了这一点——传值就等于把启动那一刻的
+// 配置永久定住，而页面上的修改会静默无效。
 //
 // NewShell builds the backend of the execute tool.
 //
-// The policy is read from the database before every execution rather than cached: a user adding
-// a deny rule in the UI expects it to apply to the very next execution, not after a restart.
-// The policy table is tiny and the read is negligible next to spawning a subprocess.
-func NewShell(runner *Runner, store *Store, maxBytes int) *Shell {
-	return &Shell{runner: runner, store: store, maxBytes: maxBytes}
+// Both policy and limits are read fresh before every execution rather than cached: a user adding
+// a deny rule or raising the timeout in the UI expects it to apply to the very next execution,
+// not after a restart. One read of the tiny policy table is negligible next to spawning a
+// subprocess.
+//
+// runtime is a function rather than a config.Runtime value precisely for this reason: passing a
+// value would freeze the configuration as it stood at startup, and edits made in the UI would
+// silently have no effect.
+func NewShell(runner *Runner, store *Store, runtime func() config.Runtime, broker *approval.Broker) *Shell {
+	return &Shell{runner: runner, store: store, runtime: runtime, broker: broker}
 }
 
 // Execute 校验并执行一条命令串。
@@ -192,10 +205,15 @@ func (s *Shell) Execute(ctx context.Context, in *filesystem.ExecuteRequest) (*fi
 	// 命令串交给 sh -c 解释，但环境变量仍然走白名单、工作目录仍然限制在工作区内。
 	// The command string is interpreted by sh -c, yet the environment is still whitelisted and
 	// the working directory is still confined to the workspace.
+	rt := s.runtime()
+	if err := s.confirm(ctx, rt, in.Command); err != nil {
+		return nil, err
+	}
 	res, err := s.runner.Run(ctx, &ExecRequest{
 		Command:        "/bin/sh",
 		Args:           []string{"-c", in.Command},
-		MaxOutputBytes: s.maxBytes,
+		Timeout:        time.Duration(rt.ExecTimeoutSec) * time.Second,
+		MaxOutputBytes: rt.MaxToolResultBytes,
 	})
 	if err != nil {
 		return nil, err
@@ -206,6 +224,50 @@ func (s *Shell) Execute(ctx context.Context, in *filesystem.ExecuteRequest) (*fi
 		ExitCode:  &exitCode,
 		Truncated: res.Truncated,
 	}, nil
+}
+
+// confirm 在执行前征求人工同意。
+//
+// 拒绝时返回的是 error 而非空输出：这条错误会经由工具错误中间件变成普通的工具结果
+// 交还模型，模型读到"用户拒绝了"之后会换个思路，而不是以为命令跑了但没产出。
+//
+// confirm seeks human consent before execution.
+//
+// A refusal returns an error rather than empty output: the tool-error middleware turns it into
+// an ordinary tool result handed back to the model, which then reads "the user refused" and
+// changes approach, instead of assuming the command ran but produced nothing.
+func (s *Shell) confirm(ctx context.Context, rt config.Runtime, command string) error {
+	if !rt.RequireExecApproval || s.broker == nil {
+		return nil
+	}
+	sessionID := approval.SessionFrom(ctx)
+	if sessionID == "" {
+		// 没有会话上下文意味着这次执行不来自交互对话（例如定时任务）。
+		// 无人可确认时一律拒绝。
+		// An absent conversation context means this execution did not come from an interactive
+		// chat (a scheduled task, for instance). With nobody to ask, always refuse.
+		return fmt.Errorf(
+			"该执行环境无法进行人工确认，命令未执行 / this execution context cannot request " +
+				"human confirmation, so the command was not run")
+	}
+
+	decision, err := s.broker.Ask(ctx, sessionID, command)
+	if errors.Is(err, approval.ErrNoReviewer) {
+		return fmt.Errorf(
+			"没有页面在监听本会话，无法确认命令，未执行 / no page is listening on this " +
+				"conversation, so the command could not be confirmed and was not run")
+	}
+	if err != nil {
+		return err
+	}
+	if !decision.Approved {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "用户拒绝了这条命令 / the user refused this command"
+		}
+		return fmt.Errorf("命令未执行：%s / command not run: %s", reason, reason)
+	}
+	return nil
 }
 
 // 编译期确认 Shell 满足 filesystem.Shell。

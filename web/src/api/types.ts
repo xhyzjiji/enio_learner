@@ -48,18 +48,30 @@ export interface RuntimeConfig {
   summarize_tokens: number
   memory_inject_limit: number
   enable_execute: boolean
+  require_exec_approval: boolean
   max_tool_result_bytes: number
   max_scheduled_tasks: number
   min_schedule_interval_sec: number
+  exec_timeout_sec: number
   retrieval_top_k: number
 }
 
 // SSE 事件。判别字段是 event，与 Go 侧 httpapi/stream.go 的常量保持一致。
 // SSE events. The discriminant is event, matching the constants in Go's httpapi/stream.go.
+// ApprovalRequest 是一条待确认的 shell 命令。
+// ApprovalRequest is one shell command awaiting confirmation.
+export interface ApprovalRequest {
+  id: string
+  session_id: string
+  command: string
+  created_at: number
+}
+
 export type ChatEvent =
   | { event: 'message_delta'; data: { content: string; reasoning?: string } }
   | { event: 'tool_call'; data: { id: string; name: string; arguments: string } }
   | { event: 'tool_result'; data: { id: string; name: string; content: string } }
   | { event: 'compression'; data: { stage: 'before' | 'after'; message: string } }
+  | { event: 'approval_request'; data: ApprovalRequest }
   | { event: 'error'; data: { message: string } }
   | { event: 'done'; data: { session_id: string; interrupted: boolean } }

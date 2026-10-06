@@ -23,3 +23,5 @@ specs/doc_export/
 README.md
 ai-plugin-lock.json
 ai-plugin.json
+skills/
+workspace/

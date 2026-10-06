@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,6 +54,50 @@ type Skill struct {
 	Path      string `json:"path,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+
+	// 以下字段只来自磁盘 SKILL.md 的 frontmatter，页面创建的技能没有。
+	// 它们不入库，每次扫描重新解析，因此改完文件就是最新的。
+	//
+	// The fields below come only from the frontmatter of a SKILL.md on disk; skills created in
+	// the UI have none. They are not persisted and are re-parsed on every scan, so editing the
+	// file is immediately reflected.
+	DisplayName string   `json:"display_name,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	Author      string   `json:"author,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+
+	// RequiresBins 是技能声明的外部命令依赖及其当前可用性。
+	//
+	// 单列出名字没什么用：技能装好了但它依赖的 CLI 没装，是这类技能包最常见的失败
+	// 方式，而且失败时只会表现为模型跑了一条命令拿到 127。把"在不在"直接查出来
+	// 摆在页面上，这个问题在用技能之前就能看见。
+	//
+	// RequiresBins lists the external commands a skill declares, along with their current
+	// availability.
+	//
+	// Listing names alone would be of little use: a skill installed without its CLI is the most
+	// common failure mode for these packs, and it surfaces only as the model running a command
+	// and getting a 127 back. Resolving availability up front puts the problem on screen before
+	// the skill is ever used.
+	RequiresBins []BinRequirement `json:"requires_bins,omitempty"`
+
+	// CLIHelp 是技能声明的帮助命令，页面原样展示供用户自己验证。
+	// CLIHelp is the help command a skill declares, shown verbatim for the user to verify.
+	CLIHelp string `json:"cli_help,omitempty"`
+}
+
+// BinRequirement 是一条外部命令依赖。
+// BinRequirement is one external command dependency.
+type BinRequirement struct {
+	Name string `json:"name"`
+	// Available 的判断基于后端进程自己的 PATH。这正是该查的那一份：execute 的子进程
+	// 通过环境白名单继承的就是同一个 PATH，所以这里查到的结果与技能实际执行时一致。
+	//
+	// Available is resolved against the backend process's own PATH. That is the right one to
+	// check: execute's children inherit the very same PATH through the environment whitelist, so
+	// what is reported here matches what the skill will actually encounter.
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
 }
 
 // 来源取值。
@@ -272,13 +317,7 @@ func parseSkillFile(path string) (Skill, error) {
 	}
 	fm, body := splitFrontMatter(string(raw))
 
-	var meta struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
-		Context     string `yaml:"context"`
-		Agent       string `yaml:"agent"`
-		Model       string `yaml:"model"`
-	}
+	var meta skillMeta
 	if fm != "" {
 		_ = yaml.Unmarshal([]byte(fm), &meta)
 	}
@@ -298,7 +337,97 @@ func parseSkillFile(path string) (Skill, error) {
 		ContextMode: meta.Context, Agent: meta.Agent, Model: meta.Model,
 		Enabled: true, Source: SourceDisk, Path: path,
 		CreatedAt: modified, UpdatedAt: modified,
+		DisplayName: meta.DisplayName, Version: meta.Version, Author: meta.Author,
+		Tags:         meta.Tags,
+		RequiresBins: resolveBins(meta.bins()),
+		CLIHelp:      firstNonEmpty(meta.CLIHelp, meta.Metadata.CLIHelp),
 	}, nil
+}
+
+// skillMeta 是 SKILL.md frontmatter 的解析目标。
+//
+// 依赖声明同时在三个位置接收，因为社区技能包在这件事上没有统一写法：实测
+// lark-setup 把 bins 和 cliHelp 写成了顶层键（它的 metadata: 与 requires: 都是空值），
+// 而规范写法是嵌在 metadata.requires 下面。只认一种写法就会在另一种上静默读到空值，
+// 而"没有声明依赖"和"依赖没解析出来"在页面上看起来完全一样。
+//
+// skillMeta is the unmarshal target for SKILL.md frontmatter.
+//
+// Dependency declarations are accepted in three places because community packs have no single
+// convention: lark-setup writes bins and cliHelp as top-level keys (its metadata: and requires:
+// are both empty), while the documented form nests them under metadata.requires. Honouring only
+// one shape would silently yield empty values for the other, and "declares no dependencies" is
+// indistinguishable on screen from "dependencies failed to parse".
+type skillMeta struct {
+	Name        string   `yaml:"name"`
+	DisplayName string   `yaml:"displayName"`
+	Description string   `yaml:"description"`
+	Context     string   `yaml:"context"`
+	Agent       string   `yaml:"agent"`
+	Model       string   `yaml:"model"`
+	Version     string   `yaml:"version"`
+	Author      string   `yaml:"author"`
+	Tags        []string `yaml:"tags"`
+
+	Bins     []string `yaml:"bins"`
+	CLIHelp  string   `yaml:"cliHelp"`
+	Requires struct {
+		Bins []string `yaml:"bins"`
+	} `yaml:"requires"`
+	Metadata struct {
+		CLIHelp  string `yaml:"cliHelp"`
+		Requires struct {
+			Bins []string `yaml:"bins"`
+		} `yaml:"requires"`
+	} `yaml:"metadata"`
+}
+
+// bins 按嵌套深度从深到浅取第一个非空的声明。
+// bins returns the first non-empty declaration, deepest nesting first.
+func (m skillMeta) bins() []string {
+	for _, c := range [][]string{m.Metadata.Requires.Bins, m.Requires.Bins, m.Bins} {
+		if len(c) > 0 {
+			return c
+		}
+	}
+	return nil
+}
+
+// resolveBins 查出每个依赖命令当前在不在 PATH 上。
+//
+// 这里每轮扫描都会跑一遍，但扫描本身有 scanTTL 缓存，几个命令的 LookPath 相比
+// 一次目录遍历可以忽略。
+//
+// resolveBins resolves whether each declared command is currently on PATH.
+//
+// This runs on every scan, but the scan itself is behind scanTTL, and a handful of LookPath
+// calls are negligible next to the directory walk they ride along with.
+func resolveBins(names []string) []BinRequirement {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]BinRequirement, 0, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		req := BinRequirement{Name: n}
+		if p, err := exec.LookPath(n); err == nil {
+			req.Available, req.Path = true, p
+		}
+		out = append(out, req)
+	}
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // splitFrontMatter 切出 YAML frontmatter 与正文。

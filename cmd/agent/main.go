@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"private/agent_basedon_eino/internal/agent/approval"
 	"private/agent_basedon_eino/internal/agent/config"
 	"private/agent_basedon_eino/internal/agent/httpapi"
 	"private/agent_basedon_eino/internal/agent/kernel"
@@ -116,7 +117,8 @@ func run() error {
 	rt := cfgMgr.Current()
 	cliStore := cli.NewStore(db)
 	runner := cli.NewRunner(workspace)
-	shell := cli.NewShell(runner, cliStore, rt.MaxToolResultBytes)
+	approvals := approval.NewBroker()
+	shell := cli.NewShell(runner, cliStore, cfgMgr.Current, approvals)
 
 	mcpMgr := mcp.NewManager(db, logger)
 	defer mcpMgr.Close()
@@ -153,6 +155,7 @@ func run() error {
 		Files:      workspace,
 		Shell:      shell,
 		WorkDir:    startup.WorkingDir,
+		SkillsDir:  startup.SkillsDir,
 		Augmenters: []kernel.Augmenter{
 			registry.Augmenter(tools.Scope{}),
 			skillBackend.Augmenter(),
@@ -185,6 +188,7 @@ func run() error {
 		Memory:    memStore,
 		Tasks:     taskStore,
 		Scheduler: scheduler,
+		Approvals: approvals,
 	})
 	if dist, err := web.Dist(); err == nil {
 		srv.MountStatic(dist)

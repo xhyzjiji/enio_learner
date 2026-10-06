@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/schema"
 
+	"private/agent_basedon_eino/internal/agent/approval"
 	"private/agent_basedon_eino/internal/agent/config"
 	"private/agent_basedon_eino/internal/agent/session"
 )
@@ -42,6 +43,43 @@ The root directory for file tools is %s. All paths are relative to it and anythi
 refused. Use relative paths such as notes/draft.md when writing; never construct absolute paths
 and never guess the location of the user's home directory.`
 
+// shellNotice 在 execute 可用时补充说明它与文件工具的区别，并明确声明联网能力。
+//
+// 声明联网不是多余的。中小参数模型在预训练里被反复灌输"我是语言模型，无法访问
+// 互联网"，这条先验强到会盖过工具表——实测 qwen3:14b 拿着 execute 却直接回复
+// "无法执行网络安装"，连一次工具调用都没发起。能力必须在提示词里说出来，
+// 光挂上工具是不够的。
+//
+// 单说工作区根目录是不够的：execute 的子进程不受那条边界约束，而技能目录恰好在
+// 边界之外。不点明这一点，模型会把 execute 的工作目录当成唯一能去的地方，
+// 于是把东西装进 workspace/skills/ 这种看起来对、实际不会被扫描的位置。
+//
+// shellNotice explains how execute differs from the file tools, when it is available, and
+// states the network capability outright.
+//
+// Stating network access is not redundant. Mid-sized models are drilled during pre-training on
+// "I am a language model and cannot access the internet", and that prior is strong enough to
+// override the tool list: qwen3:14b, holding execute, replied "cannot perform network installs"
+// without ever issuing a tool call. A capability has to be spelled out in the prompt; mounting
+// the tool is not enough.
+//
+// Naming the workspace root alone is not enough: execute's subprocesses are not bound by that
+// boundary, and the skills directory happens to sit outside it. Left unsaid, the model treats
+// execute's working directory as the only reachable place and installs things into paths like
+// workspace/skills/ — plausible-looking locations that are never scanned.
+const shellNotice = `
+你可以执行 shell 命令，因此**具备联网能力**：curl、wget、git、包管理器都能正常访问网络。
+需要下载文件、读取网页或安装工具时直接去做，不要回答"无法访问互联网"。
+执行命令时当前目录是 %s，但子进程不受工作区限制，需要时可以用绝对路径访问别处。
+本 Agent 的技能目录是 %s——安装技能一律装到这里，装到别处不会被识别。
+
+You can run shell commands, so you DO have network access: curl, wget, git and package managers
+all reach the network. When you need to download a file, read a web page or install a tool, just
+do it; never reply that you cannot access the internet.
+When running commands the current directory is %s, but subprocesses are not confined to the
+workspace and may use absolute paths to reach elsewhere when needed.
+This agent's skills directory is %s. Always install skills there; anywhere else is not detected.`
+
 // Augmenter 在基础快照之上补充能力。
 //
 // 工具、技能、长期记忆分别由 US2、US3、US5 实现，它们都需要往快照里加东西。
@@ -72,6 +110,10 @@ type EngineConfig struct {
 	Files      FileBackend
 	Shell      filesystem.Shell
 	WorkDir    string
+	// SkillsDir 是技能目录。它在工作区之外，文件工具够不到，只有 execute 能写。
+	// SkillsDir is the skills directory. It lies outside the workspace, beyond the reach of the
+	// file tools, and only execute can write to it.
+	SkillsDir  string
 	Augmenters []Augmenter
 }
 
@@ -136,6 +178,8 @@ func (e *Engine) BuildSnapshot(ctx context.Context, sessionID string, opts TurnO
 	// The execute tool is mounted only when it is globally enabled AND not disabled this turn.
 	if rt.EnableExecute && !opts.DisableShell {
 		snap.Shell = e.cfg.Shell
+		snap.Instruction += fmt.Sprintf(shellNotice,
+			e.cfg.WorkDir, e.cfg.SkillsDir, e.cfg.WorkDir, e.cfg.SkillsDir)
 	}
 
 	for _, a := range append(e.cfg.Augmenters, opts.ExtraAugmenters...) {
@@ -160,6 +204,11 @@ func (e *Engine) BuildSnapshot(ctx context.Context, sessionID string, opts TurnO
 func (e *Engine) Run(
 	ctx context.Context, sessionID, userInput string, opts TurnOptions,
 ) (*adk.AsyncIterator[*adk.AgentEvent], *Snapshot, error) {
+	// 会话 ID 必须随上下文传进工具层：execute 的人工确认要知道把请求推给哪个页面。
+	// The conversation ID must travel with the context into the tool layer: execute's human
+	// confirmation needs to know which page to send the request to.
+	ctx = approval.WithSession(ctx, sessionID)
+
 	snap, err := e.BuildSnapshot(ctx, sessionID, opts)
 	if err != nil {
 		return nil, nil, err

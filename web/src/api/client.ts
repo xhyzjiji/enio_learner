@@ -52,6 +52,12 @@ export const api = {
       body: JSON.stringify(runtime),
     }),
 
+  approve: (requestId: string, approved: boolean) =>
+    request<{ resolved: boolean }>('/api/chat/approve', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId, approved, reason: '' }),
+    }),
+
   interrupt: (sessionId: string) =>
     request<{ interrupted: boolean }>('/api/chat/interrupt', {
       method: 'POST',

@@ -4,6 +4,8 @@ import { useChat } from '@/store/chat'
 import { ToolCallCard } from './ToolCallCard'
 import { EmptyState } from './EmptyState'
 import { Markdown } from './Markdown'
+import { ApprovalCard } from './ApprovalCard'
+import { api } from '@/api/client'
 
 export function MessageList() {
   const messages = useChat((s) => s.messages)
@@ -33,7 +35,16 @@ export function MessageList() {
     <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto px-6 py-6">
       <div className="mx-auto flex max-w-3xl flex-col gap-5">
         {messages.map((m) =>
-          m.role === 'tool' ? (
+          m.role === 'approval' && m.approval ? (
+            <ApprovalCard
+              key={m.key}
+              request={m.approval}
+              onResolve={async (id, approved) => {
+                const r = await api.approve(id, approved)
+                if (!r.resolved) throw new Error('stale')
+              }}
+            />
+          ) : m.role === 'tool' ? (
             <ToolCallCard key={m.key} name={m.toolName ?? 'tool'} result={m.content} />
           ) : (
             <div

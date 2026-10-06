@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"private/agent_basedon_eino/internal/agent/approval"
 	"private/agent_basedon_eino/internal/agent/kernel"
 	"private/agent_basedon_eino/internal/agent/session"
 )
@@ -143,6 +144,17 @@ func (s *Server) runTurn(ctx context.Context, sse *SSEWriter, req ChatRequest) {
 	// own goroutine and never blocks this turn.
 	s.deps.Titles.EnsureAsync(req.SessionID)
 
+	// 在这一轮开始前登记确认监听，并在结束时注销。
+	// 顺序要紧：必须早于 Engine.Run，否则模型在首个工具调用里就要确认时，
+	// broker 还找不到监听者，命令会以「没有页面在监听」被拒。
+	//
+	// Register the confirmation listener before this turn starts and unsubscribe at the end.
+	// Order matters: it must precede Engine.Run, otherwise a model that needs confirmation on
+	// its very first tool call would find no listener registered and the command would be
+	// refused as "no page is listening".
+	stopForward := s.forwardApprovals(ctx, sse, req.SessionID)
+	defer stopForward()
+
 	iter, _, err := s.deps.Engine.Run(ctx, req.SessionID, req.Message, kernel.TurnOptions{})
 	if err != nil {
 		sse.SendError(err)
@@ -231,4 +243,75 @@ func mapStoreError(err error, kind, id string) error {
 		return &NotFoundError{Kind: kind, ID: id}
 	}
 	return err
+}
+
+// forwardApprovals 把确认请求推送到 SSE 流，返回注销函数。
+// forwardApprovals pushes confirmation requests onto the SSE stream and returns an unsubscribe
+// function.
+func (s *Server) forwardApprovals(ctx context.Context, sse *SSEWriter, sessionID string) func() {
+	if s.deps.Approvals == nil {
+		return func() {}
+	}
+	requests, unsubscribe := s.deps.Approvals.Subscribe(sessionID)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case req, ok := <-requests:
+				if !ok {
+					return
+				}
+				if err := sse.Send(EventApproval, req); err != nil {
+					s.Logger().Warn("push approval request failed",
+						"session", sessionID, "err", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return func() {
+		unsubscribe()
+		<-done
+	}
+}
+
+// ApproveRequest 是前端提交的确认结论。
+// ApproveRequest is the verdict submitted by the frontend.
+type ApproveRequest struct {
+	RequestID string `json:"request_id"`
+	Approved  bool   `json:"approved"`
+	Reason    string `json:"reason"`
+}
+
+// handleApprove 接收用户对一条命令的确认或拒绝。
+// handleApprove receives the user's approval or refusal of one command.
+func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	var req ApproveRequest
+	if err := DecodeJSON(r, &req); err != nil {
+		WriteError(w, err)
+		return
+	}
+	if req.RequestID == "" {
+		WriteError(w, &ValidationError{Field: "request_id", Reason: "request_id 不能为空 / request_id must not be empty"})
+		return
+	}
+	if s.deps.Approvals == nil {
+		WriteError(w, errors.New("确认机制未启用 / the confirmation mechanism is not enabled"))
+		return
+	}
+	reason := req.Reason
+	if !req.Approved && reason == "" {
+		reason = "用户拒绝了这条命令 / the user refused this command"
+	}
+	ok := s.deps.Approvals.Resolve(req.RequestID, approval.Decision{Approved: req.Approved, Reason: reason})
+	// 请求已消失说明等待方已经超时放弃。如实告诉前端，让它把卡片标成失效，
+	// 而不是显示「已批准」却什么都没发生。
+	//
+	// A vanished request means the waiting side already timed out. Say so plainly, so the
+	// frontend can mark the card as stale rather than showing "approved" while nothing happens.
+	WriteJSON(w, http.StatusOK, map[string]bool{"resolved": ok})
 }

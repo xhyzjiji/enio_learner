@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -29,6 +30,10 @@ const (
 	EventCompression = "compression"
 	// EventError 是可读的错误说明。
 	// EventError carries a human-readable error description.
+	// EventApproval 请求用户确认一条即将执行的 shell 命令。
+	// EventApproval asks the user to confirm a shell command about to run.
+	EventApproval = "approval_request"
+
 	EventError = "error"
 	// EventDone 标记一轮对话结束。
 	// EventDone marks the end of one conversation turn.
@@ -83,6 +88,13 @@ type DonePayload struct {
 // and the user sees a long pause followed by the whole answer at once, which defeats the point
 // of streaming.
 type SSEWriter struct {
+	// mu 保护并发写。确认请求由独立 goroutine 推送，与事件泵同时写同一个连接，
+	// 不加锁会让两个事件的字节交错，前端收到的是拼不出 JSON 的碎片。
+	//
+	// mu guards concurrent writes. Confirmation requests are pushed from a separate goroutine
+	// while the event pump writes the same connection; without the lock the bytes of two events
+	// interleave and the frontend receives fragments that do not parse as JSON.
+	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
 }
@@ -109,6 +121,8 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 // Send 写出一个事件。
 // Send emits one event.
 func (s *SSEWriter) Send(event string, payload any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal %s payload: %w", event, err)

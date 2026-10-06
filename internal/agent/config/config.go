@@ -50,6 +50,14 @@ const APIKeyEnv = "ZHIPUAI_API_KEY"
 // degrades retrieval.
 const BaseURLEnv = "AGENT_BASE_URL"
 
+// maxExecTimeoutSec 是 execute 超时的硬上限，与 cli 包的 maxTimeout 对齐。
+// 让页面能填一个比它还大的值没有意义：真正生效的仍然是 cli 侧的截断。
+//
+// maxExecTimeoutSec is the hard ceiling on the execute timeout, matching maxTimeout in the cli
+// package. Allowing the UI to enter a larger value would be pointless, since the cli-side clamp
+// is what actually takes effect.
+const maxExecTimeoutSec = 600
+
 // defaultBaseURL 是智谱开放平台的 OpenAI 兼容端点。
 // defaultBaseURL is ZhipuAI's OpenAI-compatible endpoint.
 const defaultBaseURL = "https://open.bigmodel.cn/api/paas/v4"
@@ -150,6 +158,18 @@ type Runtime struct {
 	// EnableExecute controls whether the free-form execute tool is offered. Off by default.
 	EnableExecute bool `json:"enable_execute"`
 
+	// RequireExecApproval 控制 execute 的每条命令是否需要人工确认。
+	//
+	// 默认开启。EnableExecute 决定"模型有没有 shell"，这一项决定"用之前要不要先问你"。
+	// 两者分开是因为它们回答的是不同问题：前者是能力边界，后者是信任程度。
+	//
+	// RequireExecApproval controls whether every execute command needs human confirmation.
+	//
+	// On by default. EnableExecute decides whether the model has a shell at all; this decides
+	// whether it must ask first. They are separate because they answer different questions: one
+	// is a capability boundary, the other is a degree of trust.
+	RequireExecApproval bool `json:"require_exec_approval"`
+
 	// MaxToolResultBytes 是工具返回值的字节上限，超出后截断并标注。
 	// MaxToolResultBytes caps tool result size; anything beyond is truncated and marked.
 	MaxToolResultBytes int `json:"max_tool_result_bytes"`
@@ -162,6 +182,20 @@ type Runtime struct {
 	// MinScheduleIntervalSec 是定时任务允许的最小执行间隔。
 	// MinScheduleIntervalSec is the minimum allowed interval between task executions.
 	MinScheduleIntervalSec int `json:"min_schedule_interval_sec"`
+
+	// ExecTimeoutSec 是 execute 自由执行工具的单次超时。
+	//
+	// 默认 120 秒而非更短，是因为这个工具的典型用途里包含下载、安装、构建这类
+	// 本来就慢的操作。超时过短的表现不是"安全"，而是命令在写了一半时被掐断，
+	// 留下一个状态不明的中间产物。
+	//
+	// ExecTimeoutSec bounds a single run of the free-form execute tool.
+	//
+	// The default is 120 seconds rather than something shorter because this tool's typical uses
+	// include downloads, installs and builds, which are inherently slow. Too short a timeout
+	// does not read as "safe": it kills a command halfway through writing, leaving behind an
+	// artifact in an unknown state.
+	ExecTimeoutSec int `json:"exec_timeout_sec"`
 
 	// RetrievalTopK 是混合检索最终返回的片段数。
 	// RetrievalTopK is the number of chunks hybrid retrieval finally returns.
@@ -178,9 +212,11 @@ func defaults() Runtime {
 		SummarizeTokens:        200000,
 		MemoryInjectLimit:      50,
 		EnableExecute:          false,
+		RequireExecApproval:    true,
 		MaxToolResultBytes:     64 * 1024,
 		MaxScheduledTasks:      50,
 		MinScheduleIntervalSec: 60,
+		ExecTimeoutSec:         120,
 		RetrievalTopK:          8,
 	}
 }
@@ -363,6 +399,11 @@ func Validate(c Runtime) error {
 	}
 	if c.RetrievalTopK <= 0 {
 		return errors.New("retrieval_top_k 必须为正数 / retrieval_top_k must be positive")
+	}
+	if c.ExecTimeoutSec <= 0 || c.ExecTimeoutSec > maxExecTimeoutSec {
+		return fmt.Errorf(
+			"exec_timeout_sec 必须在 1 到 %d 之间 / exec_timeout_sec must be between 1 and %d",
+			maxExecTimeoutSec, maxExecTimeoutSec)
 	}
 	return nil
 }

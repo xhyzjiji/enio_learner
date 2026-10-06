@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 
+	"private/agent_basedon_eino/internal/agent/approval"
 	"private/agent_basedon_eino/internal/agent/config"
 	"private/agent_basedon_eino/internal/agent/kernel"
 	"private/agent_basedon_eino/internal/agent/memory"
@@ -55,6 +56,7 @@ type Deps struct {
 	Memory     *memory.Store
 	Tasks      *schedule.Store
 	Scheduler  *schedule.Scheduler
+	Approvals  *approval.Broker
 }
 
 // NewServer 构造服务器并注册全部路由。
@@ -80,6 +82,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 	s.mux.HandleFunc("POST /api/chat/interrupt", s.handleInterrupt)
+	s.mux.HandleFunc("POST /api/chat/approve", s.handleApprove)
 
 	s.mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)

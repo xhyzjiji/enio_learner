@@ -38,6 +38,11 @@ const numericFields: { key: keyof RuntimeConfig; label: string; hint: string }[]
     label: '记忆全量注入上限',
     hint: '低于它就整批塞进提示词且不挂 recall 工具；超过则改为按需检索。',
   },
+  {
+    key: 'exec_timeout_sec',
+    label: '命令执行超时（秒）',
+    hint: '自由执行工具单条命令的时限，上限 600。下载、安装这类操作需要调大。',
+  },
   { key: 'max_scheduled_tasks', label: '定时任务数上限', hint: '防止 Agent 登记自我繁殖的任务。' },
   {
     key: 'min_schedule_interval_sec',
@@ -160,6 +165,23 @@ export function ModelSection() {
           </span>
         </span>
       </label>
+
+      {cfg.enable_execute && (
+        <label className="flex items-start gap-2 rounded-md bg-surface px-2 py-2">
+          <input
+            type="checkbox"
+            checked={cfg.require_exec_approval}
+            onChange={(e) => patch({ require_exec_approval: e.target.checked })}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="text-zinc-300">每条命令执行前需人工确认</span>
+            <span className="mt-0.5 block text-[10px] text-zinc-600">
+              关掉这个开关，模型在之后的每一轮里都握着一个完整的 shell，而你只能在结果里看到它跑过什么。
+            </span>
+          </span>
+        </label>
+      )}
 
       <div className="space-y-2">
         {numericFields.map((f) => (

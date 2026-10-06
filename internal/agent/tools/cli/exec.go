@@ -121,6 +121,20 @@ func (r *Runner) Run(ctx context.Context, req *ExecRequest) (*ExecResult, error)
 	cmd := exec.CommandContext(runCtx, req.Command, req.Args...)
 	cmd.Dir = workDir
 	cmd.Env = safeEnv()
+	setProcessGroup(cmd)
+	// 超时后由 Cancel 杀掉整个进程组，而不是只杀直接子进程。
+	// On timeout Cancel kills the whole process group rather than just the direct child.
+	cmd.Cancel = func() error {
+		killProcessGroup(cmd)
+		return nil
+	}
+	// WaitDelay 是最后一道保险：万一仍有进程握着输出管道不放，到点强制关闭管道，
+	// 让 Wait 返回。没有它的话，一个绕过了进程组的守护进程能把这一轮对话永久挂住。
+	//
+	// WaitDelay is the last line of defence: should some process still cling to the output pipe,
+	// the pipe is force-closed when it expires so that Wait can return. Without it, a daemon
+	// that escaped the process group could hang this conversation turn forever.
+	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

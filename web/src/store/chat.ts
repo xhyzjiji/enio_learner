@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api, streamChat } from '@/api/client'
-import type { Session, StoredMessage } from '@/api/types'
+import type { Session, StoredMessage, ApprovalRequest } from '@/api/types'
 
 /**
  * 界面上的一条消息。它比后端的 StoredMessage 多一些只在前端存在的状态：
@@ -11,13 +11,16 @@ import type { Session, StoredMessage } from '@/api/types'
  */
 export interface ChatMessage {
   key: string
-  role: 'user' | 'assistant' | 'tool' | 'system'
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'approval'
   content: string
   reasoning?: string
   toolCalls?: { id: string; name: string; arguments: string }[]
   toolCallId?: string
   toolName?: string
   streaming?: boolean
+  // approval 角色专用：待确认的命令请求。
+  // Only for the approval role: the command request awaiting confirmation.
+  approval?: ApprovalRequest
 }
 
 interface ChatState {
@@ -176,6 +179,18 @@ export const useChat = create<ChatState>((set, get) => ({
                   toolCallId: ev.data.id,
                   toolName: ev.data.name,
                 },
+              ],
+            }))
+            break
+          case 'approval_request':
+            // 作为一条独立消息插入，而不是弹窗。确认请求是对话的一部分——
+            // 你三天后回看这个会话，应该能看到当时同意过什么。
+            // Inserted as its own message rather than a modal. A confirmation is part of the
+            // conversation: reviewing it three days later, you should still see what you agreed to.
+            set((st) => ({
+              messages: [
+                ...st.messages,
+                { key: `ap-${ev.data.id}`, role: 'approval', content: '', approval: ev.data },
               ],
             }))
             break
