@@ -20,7 +20,7 @@ web/dist/*
 specs/doc_export/
 
 .cursor/
-README.md
+# README.md
 ai-plugin-lock.json
 ai-plugin.json
 skills/
