@@ -168,6 +168,72 @@ func ToSchema(m *Message) *schema.Message {
 	}
 }
 
+// emptyToolResult 是空工具结果的占位文字。
+// emptyToolResult stands in for a tool result that came back empty.
+const emptyToolResult = "[工具执行完成，没有返回内容 / the tool completed and returned nothing]"
+
+// NormalizeForModel 处理掉会让模型服务拒收整轮请求的空消息。
+//
+// 起因是一个很难从报错反推回来的失败：Ollama 的 OpenAI 兼容层按类型分支解析每条
+// 消息的 content，拿到 nil 就回 400 "invalid message content type: <nil>"。而
+// go-openai 的 content 字段带 omitempty——内容是空串时整个字段不会出现在 JSON 里，
+// 服务端读到的就是 nil。于是**一条内容为空的历史消息会让整轮对话报一个和内容毫无
+// 关系的错**，而且报错点落在 ChatModel 节点上，看不出是历史里的哪一条惹的祸。
+//
+// 两种空消息必须分开处理：
+//   - tool 消息不能丢。每个 tool_call 都要有一条对应的 tool 消息，丢掉会让
+//     assistant 那边的工具调用悬空，换来另一个 400。所以补占位文字。这对模型也更好：
+//     空结果没法区分"跑完了没输出"和"根本没跑"。
+//   - 其余角色的空消息直接丢弃。既无正文又无工具调用的 assistant 消息不携带任何信息
+//     （常见来源是只产出思维链、正文为空的那一次回复），塞一句假正文反而会被模型
+//     当成自己说过的话。
+//
+// 修在读路径而不是写路径，是因为库里已经存在的坏消息也必须被绕开——只拦新写入的话，
+// 出过问题的会话会永远卡在那个 400 上，除非删掉重开。
+//
+// NormalizeForModel removes the empty messages that make a model service reject an entire turn.
+//
+// The cause is a failure that is hard to reason backwards from: Ollama's OpenAI-compatibility
+// layer type-switches on each message's content and answers 400 "invalid message content type:
+// <nil>" when it gets nil. go-openai's content field carries omitempty, so an empty string makes
+// the field vanish from the JSON and the server reads nil. One empty history message therefore
+// fails the whole turn with an error unrelated to content, reported against the ChatModel node,
+// giving no clue which history entry is at fault.
+//
+// The two kinds of empty message need opposite treatment:
+//   - Tool messages must not be dropped. Every tool_call requires a matching tool message, and
+//     removing one leaves the assistant's call dangling — another 400. A placeholder goes in
+//     instead, which also helps the model: an empty result cannot be told apart from "never ran".
+//   - Empty messages of any other role are dropped. An assistant message with neither content nor
+//     tool calls carries nothing (it typically comes from a reply that produced only reasoning),
+//     and inventing body text would have the model treat it as something it had said.
+//
+// This lives on the read path rather than the write path because messages already stored must be
+// worked around too: guarding only new writes would leave an affected conversation permanently
+// stuck on that 400, short of deleting it and starting over.
+func NormalizeForModel(msgs []*schema.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m == nil {
+			continue
+		}
+		if m.Content != "" || len(m.ToolCalls) > 0 {
+			out = append(out, m)
+			continue
+		}
+		if m.Role == schema.Tool {
+			// 复制一份再改。这些消息可能来自压缩快照的缓存切片，就地修改会把缓存里的
+			// 内容也改掉，而那份数据下一轮还要用。
+			// Copy before editing. These may come from a compressed snapshot's cached slice, and
+			// mutating in place would alter data that the next turn still relies on.
+			fixed := *m
+			fixed.Content = emptyToolResult
+			out = append(out, &fixed)
+		}
+	}
+	return out
+}
+
 func encodeToolCalls(tcs []schema.ToolCall) (string, error) {
 	if len(tcs) == 0 {
 		return "", nil

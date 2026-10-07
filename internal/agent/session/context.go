@@ -103,7 +103,11 @@ func (s *Store) BuildModelInput(ctx context.Context, sessionID string) ([]*schem
 		return nil, err
 	}
 	if snap == nil || len(snap.Messages) == 0 {
-		return s.LoadHistory(ctx, sessionID)
+		history, err := s.LoadHistory(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		return NormalizeForModel(history), nil
 	}
 
 	tail, err := s.messagesAfter(ctx, sessionID, snap.SourceSeq)
@@ -113,7 +117,11 @@ func (s *Store) BuildModelInput(ctx context.Context, sessionID string) ([]*schem
 	out := make([]*schema.Message, 0, len(snap.Messages)+len(tail))
 	out = append(out, snap.Messages...)
 	out = append(out, tail...)
-	return out, nil
+	// 归一化放在这里，而不是放进上面两个读函数各做一遍：这是通往模型的唯一入口，
+	// 压缩快照里的消息也必须一并过滤，而快照不走那两个读函数。
+	// Normalizing here rather than inside each of the two readers: this is the single path to the
+	// model, and snapshot messages must be filtered too — they do not pass through those readers.
+	return NormalizeForModel(out), nil
 }
 
 // messagesAfter 返回序号大于 seq 的原始消息。

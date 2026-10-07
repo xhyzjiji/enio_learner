@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"private/agent_basedon_eino/internal/agent/memory"
 	"private/agent_basedon_eino/internal/agent/rag"
 	"private/agent_basedon_eino/internal/agent/schedule"
+	"private/agent_basedon_eino/internal/agent/secrets"
 	"private/agent_basedon_eino/internal/agent/session"
 	"private/agent_basedon_eino/internal/agent/skills"
 	"private/agent_basedon_eino/internal/agent/store"
@@ -63,7 +65,11 @@ func run() error {
 		ragDir    = flag.String("rag-dir", "documents", "RAG 文档目录 / RAG document directory")
 		skillsDir = flag.String("skills-dir", "skills", "技能目录 / skills directory")
 		workDir   = flag.String("work-dir", "workspace", "文件工具工作目录 / working directory for file tools")
-		verbose   = flag.Bool("verbose", false, "输出调试日志 / emit debug logs")
+		// 凭证目录默认不在仓库里，见 resolveSecretsDir。
+		// The credential directory defaults outside the repository; see resolveSecretsDir.
+		secretsDir = flag.String("secrets-dir", "",
+			"凭证目录，留空则用 ~/.config/agent/secrets / credential directory, defaults to ~/.config/agent/secrets")
+		verbose = flag.Bool("verbose", false, "输出调试日志 / emit debug logs")
 	)
 	flag.Parse()
 
@@ -106,6 +112,15 @@ func run() error {
 		WorkingDir: mustAbs(*workDir),
 	}
 	cfgMgr, err := config.NewManager(ctx, db, startup)
+	if err != nil {
+		return err
+	}
+
+	secretsPath, err := resolveSecretsDir(*secretsDir)
+	if err != nil {
+		return err
+	}
+	secretStore, err := secrets.NewStore(secretsPath)
 	if err != nil {
 		return err
 	}
@@ -158,6 +173,7 @@ func run() error {
 		SkillsDir:  startup.SkillsDir,
 		Augmenters: []kernel.Augmenter{
 			registry.Augmenter(tools.Scope{}),
+			secretStore.Augmenter(),
 			skillBackend.Augmenter(),
 			ragRetriever.Augmenter(),
 			memory.NewInjector(memStore).Augmenter(),
@@ -189,6 +205,7 @@ func run() error {
 		Tasks:     taskStore,
 		Scheduler: scheduler,
 		Approvals: approvals,
+		Secrets:   secretStore,
 	})
 	if dist, err := web.Dist(); err == nil {
 		srv.MountStatic(dist)
@@ -254,6 +271,39 @@ func ensureLoopback(addr string) error {
 				"remote access", addr, addr)
 	}
 	return nil
+}
+
+// resolveSecretsDir 定出凭证目录。
+//
+// 与 -db、-rag-dir 等不同，它默认**不落在仓库里**，而是放进用户主目录。仓库会被
+// clone、打包、随手复制到另一台机器，凭证跟着走一圈就等于泄露；放在 ~/.config 下
+// 还顺带免掉了误 commit 的可能。
+//
+// 取不到主目录时宁可直接失败也不退回当前目录：那等于在不告诉用户的情况下把凭证写进
+// 了仓库，而这恰恰是整个默认值想避开的事。
+//
+// resolveSecretsDir determines the credential directory.
+//
+// Unlike -db or -rag-dir it does NOT default inside the repository but under the user's home
+// directory. Repositories get cloned, archived and copied to other machines, and credentials
+// riding along amount to a leak; living under ~/.config also removes any chance of committing
+// them by accident.
+//
+// When the home directory cannot be determined it fails rather than falling back to the current
+// directory: that fallback would silently write credentials into the repository, which is the
+// exact outcome this default exists to prevent.
+func resolveSecretsDir(flagVal string) (string, error) {
+	if v := strings.TrimSpace(flagVal); v != "" {
+		return mustAbs(v), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf(
+			"无法确定主目录，凭证目录没有安全的默认位置，请设置 HOME 或用 -secrets-dir 指定 / "+
+				"cannot determine the home directory, so there is no safe default for the credential "+
+				"directory; set HOME or pass -secrets-dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "agent", "secrets"), nil
 }
 
 func mustAbs(p string) string {

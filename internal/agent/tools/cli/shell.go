@@ -56,9 +56,32 @@ var builtinDenyPatterns = []string{
 	`>\s*/dev/(sd|nvme|disk)`,
 	`(^|[;&|]\s*)chmod\s+(-[a-zA-Z]*\s+)*777\s+/`,
 	// 直接读取环境变量的尝试。子进程环境已经走白名单，这里只是让拒绝更早、更直白。
+	//
+	// printenv 整条拦掉，不区分有没有参数：它唯一的用途就是打印环境变量，而
+	// `printenv SOME_KEY` 恰恰是最省事的那种读法。原先只拦裸命令，带一个参数就绕过去了。
+	// env 与 set 不能同样处理——`env VAR=1 cmd` 是合法的运行方式，`set -e` 是脚本惯例，
+	// 一刀切会误伤，所以只拦"后面没有命令可跑"的转储形态，重定向也算进去。
+	//
+	// 这里不去拦 `echo $SOME_KEY`：要覆盖它就得匹配任意 echo 加变量展开，而脚本里
+	// `echo "$result"` 太常见，误伤一条能跑的命令比漏掉一次读取更糟。真正的依仗仍然是
+	// 白名单——子进程环境里本就没有秘密可读。
+	//
 	// Attempts to dump the environment. The child environment is already whitelisted; this
 	// merely makes the refusal earlier and more explicit.
-	`(^|[;&|]\s*)(env|printenv|set)\s*($|[;&|])`,
+	//
+	// printenv is rejected outright regardless of arguments: printing environment variables is
+	// its only purpose, and `printenv SOME_KEY` is the laziest way to read one. The previous
+	// pattern caught only the bare command, so a single argument walked straight past it.
+	// env and set cannot be treated the same way — `env VAR=1 cmd` is a legitimate way to run
+	// something and `set -e` is a scripting staple — so only the dumping form, where no command
+	// follows, is rejected; redirection counts as dumping too.
+	//
+	// `echo $SOME_KEY` is deliberately left alone: covering it would mean matching any echo with
+	// a variable expansion, and `echo "$result"` is far too common in scripts. Breaking a working
+	// command is worse than missing one read. The real safeguard remains the whitelist — there is
+	// nothing secret in the child environment to begin with.
+	`(^|[;&|]\s*)printenv\b`,
+	`(^|[;&|]\s*)(env|set)\s*($|[;&|>])`,
 }
 
 // CommandValidator 按策略校验命令串。

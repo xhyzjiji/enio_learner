@@ -56,6 +56,23 @@ export interface RuntimeConfig {
   retrieval_top_k: number;
 }
 
+// SecretInfo 描述一条已配置的凭证。**没有值字段**，接口也永远不会返回值。
+// path 必须有：技能和命令要靠它写出 $(cat <path>)，它本身不是秘密。
+//
+// SecretInfo describes one configured credential. There is NO value field, and the API never
+// returns one. path is required: skills and commands need it to write $(cat <path>), and the
+// path itself is not a secret.
+export interface SecretInfo {
+  name: string;
+  path: string;
+  updated_at: number;
+}
+
+export interface SecretList {
+  secrets: SecretInfo[];
+  dir: string;
+}
+
 // SSE 事件。判别字段是 event，与 Go 侧 httpapi/stream.go 的常量保持一致。
 // SSE events. The discriminant is event, matching the constants in Go's httpapi/stream.go.
 // ApprovalRequest 是一条待确认的 shell 命令。

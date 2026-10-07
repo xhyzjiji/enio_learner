@@ -75,6 +75,7 @@ go run ./cmd/agent
 | `-rag-dir` | `documents` | RAG 文档目录 |
 | `-skills-dir` | `skills` | 技能目录，装技能一律装到这里 |
 | `-work-dir` | `workspace` | 文件工具的根目录，模型读写文件的边界 |
+| `-secrets-dir` | `~/.config/agent/secrets` | 第三方工具凭证目录，**默认不在仓库里**，见第六节 |
 | `-verbose` | `false` | 调试日志 |
 
 ### 切换模型名
@@ -161,7 +162,34 @@ go run ./cmd/agent
 
 ---
 
-## 七、接口速查
+## 七、第三方工具的凭证
+
+技能要调 Tavily、各类 OpenAPI 这些需要密钥的服务时，**不能靠环境变量**。上一节那条白名单就是原因：你 `export TAVILY_API_KEY` 再让技能去读 `$TAVILY_API_KEY`，拿到的永远是空串，而且不报错——`curl` 照常发得出去，只是换回一个 401，排查时很难想到是这里。
+
+正确做法是在页面左侧的「凭证」分区添加。名称只允许大写字母、数字和下划线（例如 `TAVILY_API_KEY`），值写进 `~/.config/agent/secrets/<名称>`，权限 `0600`，目录 `0700`。也可以打接口：
+
+```bash
+curl -s -X PUT http://127.0.0.1:8090/api/secrets/TAVILY_API_KEY \
+  -H 'Content-Type: application/json' -d '{"value":"tvly-你的key"}'
+```
+
+配好之后，**模型会在系统提示词里看到凭证名和文件路径**（仅在 `execute` 开启时注入，关着的话子进程都起不来，讲了也没用），命令里直接这样读：
+
+```bash
+curl -H "Authorization: Bearer $(cat ~/.config/agent/secrets/TAVILY_API_KEY)" https://api.tavily.com/search
+```
+
+几点要明确：
+
+**没有任何接口会返回凭证的值**，页面上也只显示「已配置」。想核对只能重新填一遍。这个不方便是故意的——本服务没有鉴权层，多一条读取凭证的路就是多一个口子。
+
+**这不防模型读取。** `execute` 开着时模型随时可以 `cat` 那个文件，这是 `execute` 的本质。它防的是另一件事：凭证**进入对话历史**。直接粘进聊天框的密钥会落进 `messages` 表，此后每一轮都被重新送回模型上下文，还会随会话导出和日志扩散；而文件里的凭证只在模型主动去读的那一次才暴露，那一次会留在工具调用记录里，你看得见。
+
+**默认目录不在仓库里。** 仓库会被 clone、打包、复制到别的机器，凭证跟着走一圈就等于泄露，所以默认放在 `~/.config/agent/secrets`，顺带免掉误 commit 的可能。要换位置用 `-secrets-dir`。
+
+---
+
+## 八、接口速查
 
 | 分类 | 端点 |
 |---|---|
@@ -175,10 +203,11 @@ go run ./cmd/agent
 | 工具 | `GET /api/tools`、`/api/tools/mcp`、`/api/tools/cli`、`/api/tools/policy` 各自的增删改 |
 | 记忆 | `GET /api/memories`、`PUT/DELETE /api/memories/{key}` |
 | 定时任务 | `GET/POST /api/tasks`、`DELETE /api/tasks/{id}`、`POST /api/tasks/{id}/run`、`GET /api/tasks/{id}/runs` |
+| 凭证 | `GET /api/secrets`、`PUT/DELETE /api/secrets/{name}`（只进不出，没有读取值的端点） |
 
 ---
 
-## 八、排查
+## 九、排查
 
 **启动就报缺密钥。** 用本地模型时 `AGENT_BASE_URL` 没设对。判定本地端点看的是地址里有没有 `127.0.0.1`、`localhost` 或 `[::1]`，写成机器名或局域网 IP 都会被当成远程服务并要求密钥。
 
@@ -189,3 +218,5 @@ go run ./cmd/agent
 **改了配置重启就丢。** 确认改的是运行时配置而不是启动参数。启动参数（监听地址、各目录）只能靠命令行 flag，不落库。
 
 **中文检索召回为空。** `rag_chunks_fts` 必须用 `tokenize = 'trigram'`。FTS5 默认的 `unicode61` 会把连续汉字当成单个 token，中文查询恒返回空结果且不报错。
+
+**技能调外部接口一直 401。** 密钥是不是用 `export` 给的？子进程环境走白名单，`$XXX_API_KEY` 在命令里恒为空串。改用第七节的「凭证」。

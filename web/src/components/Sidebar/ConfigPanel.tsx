@@ -6,6 +6,7 @@ import { RagSection } from "./RagSection";
 import { MemorySection } from "./MemorySection";
 import { TaskSection } from "./TaskSection";
 import { ModelSection } from "./ModelSection";
+import { SecretSection } from "./SecretSection";
 
 interface SectionProps {
   title: string;
@@ -14,11 +15,17 @@ interface SectionProps {
 }
 
 /**
- * 配置分区的可折叠外壳。左侧栏上半部的六个分区（文档、MCP、本地命令、技能、
- * 定时任务、模型）都用它包起来。
+ * 配置分区的可折叠外壳。左侧栏上半部的每个分区都用它包起来。
  *
- * Collapsible shell for a configuration section. All six sections in the upper half of the
- * sidebar (documents, MCP, local commands, skills, scheduled tasks, model) are wrapped in it.
+ * 这里不写分区的个数和清单：分区会增减，而一处写死的枚举改起来总会被漏掉，
+ * 留下一段看着像事实、实际已经过时的注释。
+ *
+ * Collapsible shell for a configuration section. Every section in the upper half of the sidebar
+ * is wrapped in it.
+ *
+ * Neither the count nor the list of sections is spelled out here: sections come and go, and a
+ * hard-coded enumeration is exactly the kind of thing an edit forgets, leaving behind a comment
+ * that reads like fact while being out of date.
  */
 export function Section({ title, children, hint }: SectionProps) {
   const [open, setOpen] = useState(false);
@@ -64,6 +71,9 @@ export function ConfigPanel() {
       </Section>
       <Section title="定时任务">
         <TaskSection />
+      </Section>
+      <Section title="凭证">
+        <SecretSection />
       </Section>
       <Section title="模型与限额">
         <ModelSection />

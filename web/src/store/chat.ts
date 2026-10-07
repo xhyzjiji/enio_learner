@@ -198,6 +198,19 @@ export const useChat = create<ChatState>((set, get) => ({
     set((st) => ({
       sending: true,
       error: null,
+      // notice 必须一起清掉，和 send 开头一样。
+      //
+      // 上一轮因为等确认而停下时留下的横幅，到这里已经不再成立——人已经做了决定，
+      // 模型正要接着跑。不清的话，输出在上面不断追加，底下那条"本轮已中断"一直挂着，
+      // 页面在同一时刻给出两个互相矛盾的说法。
+      //
+      // notice must be cleared here too, exactly as send does.
+      //
+      // The banner left by the previous pause is no longer true at this point: the decision has
+      // been made and the model is about to continue. Left alone, output keeps appending above
+      // while "this turn was interrupted" sits below — two contradictory statements on screen at
+      // the same moment.
+      notice: null,
       // 决定已经做出，把卡片就地标记掉，再挂一条新的助手消息承接后续输出。
       // The verdict is in: mark the card in place and attach a fresh assistant message to
       // receive whatever comes next.
@@ -282,6 +295,18 @@ async function consume(
       messages: st.messages.map((m) => (m.key === assistantKey ? fn(m) : m)),
     }));
 
+  // 本轮是否出现过确认卡片。done 事件只带一个 interrupted 布尔值，而后端那一位
+  // 在两种完全不同的情况下都会置真：模型停下来等人确认，以及这一轮被取消。
+  // 前者页面上已经有一张卡片在讲发生了什么，再压一条"本轮已中断"既重复又吓人；
+  // 后者才是真的"停了，而且不会自己继续"，那时横幅是唯一的线索。
+  //
+  // Whether a confirmation card appeared this turn. The done event carries a single interrupted
+  // flag, and the backend sets that bit in two quite different situations: the model pausing for
+  // human confirmation, and the turn being cancelled. In the former a card already explains what
+  // happened, so an additional "this turn was interrupted" is both redundant and alarming; only
+  // in the latter has it genuinely stopped for good, and there the banner is the sole clue.
+  let sawApproval = false;
+
   try {
     for await (const ev of stream) {
       switch (ev.event) {
@@ -315,6 +340,7 @@ async function consume(
           }));
           break;
         case "approval_request":
+          sawApproval = true;
           // 作为一条独立消息插入，而不是弹窗。确认请求是对话的一部分——
           // 你三天后回看这个会话，应该能看到当时同意过什么。
           // Inserted as its own message rather than a modal. A confirmation is part of the
@@ -338,8 +364,14 @@ async function consume(
           set({ error: ev.data.message });
           break;
         case "done":
-          if (ev.data.interrupted)
-            set({ notice: "本轮已中断 / this turn was interrupted" });
+          // 有卡片在等你点的时候什么都不说：卡片本身就是状态，而且点完这一轮会接着跑。
+          // A card awaiting your click says it all: it is the state, and the turn resumes once
+          // you act on it.
+          if (ev.data.interrupted && !sawApproval)
+            set({
+              notice:
+                "本轮已停止，没有待确认项可恢复 / this turn stopped with nothing to resume",
+            });
           break;
       }
     }

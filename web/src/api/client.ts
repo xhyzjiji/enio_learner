@@ -2,6 +2,7 @@ import type {
   ApprovalRequest,
   ChatEvent,
   RuntimeConfig,
+  SecretList,
   Session,
   StoredMessage,
 } from "./types";
@@ -81,6 +82,23 @@ export const api = {
     request<{ interrupted: boolean }>("/api/chat/interrupt", {
       method: "POST",
       body: JSON.stringify({ session_id: sessionId }),
+    }),
+
+  // 凭证接口是单向的：列表只给名字和文件路径，拿不到值，后端也不提供读回值的口子。
+  // 要核对只能重新填一遍。
+  // The credential endpoints are one-way: the listing carries names and file paths but no
+  // values, and the backend exposes no way to read one back. Verifying means retyping.
+  listSecrets: () => request<SecretList>("/api/secrets"),
+
+  setSecret: (name: string, value: string) =>
+    request<SecretList>(`/api/secrets/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    }),
+
+  deleteSecret: (name: string) =>
+    request<void>(`/api/secrets/${encodeURIComponent(name)}`, {
+      method: "DELETE",
     }),
 };
 

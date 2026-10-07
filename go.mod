@@ -2,7 +2,15 @@ module private/agent_basedon_eino
 
 go 1.26.0
 
-require github.com/cloudwego/eino v0.9.13
+require (
+	github.com/cloudwego/eino v0.9.13
+	github.com/cloudwego/eino-ext/components/document/parser/docx v0.0.0-20260924074145-3603a39473c3
+	github.com/cloudwego/eino-ext/components/document/parser/html v0.0.0-20260924074145-3603a39473c3
+	github.com/cloudwego/eino-ext/components/document/parser/pdf v0.0.0-20260924074145-3603a39473c3
+	github.com/cloudwego/eino-ext/components/document/parser/xlsx v0.0.0-20260924074145-3603a39473c3
+	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
+	github.com/google/uuid v1.6.0
+)
 
 require (
 	github.com/PuerkitoBio/goquery v1.8.1 // indirect
@@ -16,22 +24,16 @@ require (
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/eino-ext/adk/backend/local v0.2.6 // indirect
-	github.com/cloudwego/eino-ext/components/document/parser/docx v0.0.0-20260924074145-3603a39473c3 // indirect
-	github.com/cloudwego/eino-ext/components/document/parser/html v0.0.0-20260924074145-3603a39473c3 // indirect
-	github.com/cloudwego/eino-ext/components/document/parser/pdf v0.0.0-20260924074145-3603a39473c3 // indirect
-	github.com/cloudwego/eino-ext/components/document/parser/xlsx v0.0.0-20260924074145-3603a39473c3 // indirect
 	github.com/cloudwego/eino-ext/components/document/transformer/reranker/score v0.0.0-20260924074145-3603a39473c3 // indirect
 	github.com/cloudwego/eino-ext/components/document/transformer/splitter/markdown v0.0.0-20260924074145-3603a39473c3 // indirect
 	github.com/cloudwego/eino-ext/components/document/transformer/splitter/recursive v0.0.0-20260924074145-3603a39473c3 // indirect
 	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20260924074145-3603a39473c3 // indirect
-	github.com/cloudwego/eino-ext/components/model/openai v0.1.13 // indirect
 	github.com/cloudwego/eino-ext/components/tool/mcp v0.0.8 // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.17 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eino-contrib/docx2md v0.0.1 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/evanphx/json-patch v0.5.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect

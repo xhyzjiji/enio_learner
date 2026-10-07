@@ -207,6 +207,25 @@ func composeOutput(stdout, stderr *bytes.Buffer, res *ExecResult, maxBytes int) 
 	}
 
 	out := sb.String()
+	if out == "" {
+		// 命令成功但一个字也没打印——mkdir、cp、chmod、mv 全是这样。
+		//
+		// 返回空串有两个后果，后一个尤其隐蔽：模型分不清"跑完了没输出"和"根本没跑"，
+		// 于是常常把同一条命令再发一遍；而空内容的工具消息经 go-openai 序列化时，
+		// content 字段带 omitempty 会被整个省掉，Ollama 的兼容层读到 nil 直接回
+		// 400 "invalid message content type: <nil>"——报错落在 ChatModel 节点上，
+		// 完全看不出是哪一条历史消息惹的祸。
+		//
+		// The command succeeded without printing a thing — mkdir, cp, chmod and mv all do this.
+		//
+		// Returning an empty string has two consequences, the second far more insidious: the
+		// model cannot tell "ran fine, no output" from "never ran" and tends to resend the same
+		// command; and an empty tool message, once serialized by go-openai, loses its content
+		// field entirely to omitempty, so Ollama's compatibility layer reads nil and answers 400
+		// "invalid message content type: <nil>" — an error attributed to the ChatModel node,
+		// with no hint as to which history message caused it.
+		out = "[命令执行成功，没有输出 / command succeeded with no output]"
+	}
 	if len(out) <= maxBytes {
 		return out, false
 	}

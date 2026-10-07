@@ -24,6 +24,7 @@ import (
 	"private/agent_basedon_eino/internal/agent/memory"
 	"private/agent_basedon_eino/internal/agent/rag"
 	"private/agent_basedon_eino/internal/agent/schedule"
+	"private/agent_basedon_eino/internal/agent/secrets"
 	"private/agent_basedon_eino/internal/agent/session"
 	"private/agent_basedon_eino/internal/agent/skills"
 	"private/agent_basedon_eino/internal/agent/tools"
@@ -57,6 +58,7 @@ type Deps struct {
 	Tasks      *schedule.Store
 	Scheduler  *schedule.Scheduler
 	Approvals  *approval.Store
+	Secrets    *secrets.Store
 }
 
 // NewServer 构造服务器并注册全部路由。
@@ -109,6 +111,9 @@ func (s *Server) routes() {
 	}
 	if s.deps.Tasks != nil && s.deps.Scheduler != nil {
 		s.registerTaskRoutes()
+	}
+	if s.deps.Secrets != nil {
+		s.registerSecretRoutes()
 	}
 }
 
